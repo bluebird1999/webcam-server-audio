@@ -1,0 +1,70 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+服务器AUDIO接口文档
+server AUDIO interface
+2020-10-04
+ning
+ (/server/audio/audio_interface.h)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+################################################################################
+宏定义（MACRO）
+################################################################################
+
+################################################################################
+数据结构（STRUCT）
+################################################################################
+IOT参数结构体：提供给其他服务器的统一参数接口
+typedef struct audio_iot_config_t {
+	(待补)
+} audio_iot_config_t;
+
+################################################################################
+消息（MESSAGE）
+################################################################################
+#define		MSG_AUDIO_BASE						(SERVER_AUDIO<<16)
+#define		MSG_AUDIO_SIGINT					MSG_AUDIO_BASE | 0x0000
+#define		MSG_AUDIO_SIGINT_ACK				MSG_AUDIO_BASE | 0x1000
+#define		MSG_AUDIO_START						MSG_AUDIO_BASE | 0x0010
+#define		MSG_AUDIO_START_ACK					MSG_AUDIO_BASE | 0x1010
+#define		MSG_AUDIO_STOP						MSG_AUDIO_BASE | 0x0011
+#define		MSG_AUDIO_STOP_ACK					MSG_AUDIO_BASE | 0x1011
+#define		MSG_AUDIO_CTRL						MSG_AUDIO_BASE | 0x0012
+#define		MSG_AUDIO_CTRL_ACK					MSG_AUDIO_BASE | 0x1012
+#define		MSG_AUDIO_CTRL_EXT					MSG_AUDIO_BASE | 0x0013
+#define		MSG_AUDIO_CTRL_EXT_ACK				MSG_AUDIO_BASE | 0x1013
+#define		MSG_AUDIO_CTRL_DIRECT				MSG_AUDIO_BASE | 0x0014
+#define		MSG_AUDIO_CTRL_DIRECT_ACK			MSG_AUDIO_BASE | 0x1014
+#define		MSG_AUDIO_GET_PARA					MSG_AUDIO_BASE | 0x0015
+#define		MSG_AUDIO_GET_PARA_ACK				MSG_AUDIO_BASE | 0x1015
+--------------------------------------------------------------------------------
+		MSG_AUDIO_SIGINT
+消息说明：		服务器发送SIGINT系统响应到MANAGER
+发送服务器：		AUDIO
+接受服务器：		MANAGER
+传入参数：		无
+返回消息：		无
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+		MSG_AUDIO_START
+消息说明：		启动AUDIO流传输
+发送服务器：		MIIO,MISS
+接受服务器：		AUDIO
+传入参数：		无
+返回消息：		必须
+		MSG_AUDIO_START_ACK
+传回参数：
+	result:		int						0:成功，其他失败
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+		MSG_AUDIO_STOP
+消息说明：		停止AUDIO流传输
+发送服务器：		MIIO,MISS
+接受服务器：		AUDIO
+传入参数：		无
+返回消息：		必须
+		MSG_AUDIO_STOP_ACK
+传回参数：
+	result:		int						0:成功，其他失败
+--------------------------------------------------------------------------------

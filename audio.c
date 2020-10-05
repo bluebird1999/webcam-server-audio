@@ -213,7 +213,7 @@ static int write_miss_avbuffer(struct rts_av_buffer *data)
 	av_data_info_t	info;
     /********message body********/
 	msg_init(&msg);
-	msg.message = MSG_AUDIO_BUFFER_MISS;
+	msg.message = MSG_MISS_AUDIO_DATA;
 	msg.extra = data->vm_addr;
 	msg.extra_size = data->bytesused;
 	info.flag = data->flags;
@@ -258,7 +258,6 @@ static int server_set_msg_lock(int type, int st)
 	if( !info.msg_lock ) {
 		if( type == MSG_TYPE_SET_CARE) {
 			info.msg_lock = 1;
-			info.msg_status = st;
 			ret = 0;
 		}
 	}
@@ -277,9 +276,8 @@ static int server_check_msg_lock(void)
 		return ret;
 	}
 	if( info.msg_lock ) {
-		if( info.status == info.msg_status ) {
+		if( info.status == 0 ) {
 			info.msg_lock = 0;
-			info.msg_status = 0;
 			ret = 0;
 		}
 	}
@@ -359,9 +357,9 @@ static int server_message_proc(void)
 	else if( ret == 1) {
 		return 0;
 	}
-	server_set_msg_lock(msg.type, msg.target_status);
+	server_set_msg_lock(0, 0);
 	switch(msg.message){
-	case MSG_MISS_SERVER_AUDIO_START:
+	case MSG_AUDIO_START:
 		st = server_get_status(STATUS_TYPE_STATUS);
 		log_info("audio server status = %d", st);
 		if( st == STATUS_IDLE ) {
@@ -373,7 +371,7 @@ static int server_message_proc(void)
 		else
 			ret = -1;
 		break;
-	case MSG_MISS_SERVER_AUDIO_STOP:
+	case MSG_AUDIO_STOP:
 		if( server_get_status(STATUS_TYPE_STATUS) == STATUS_RUN) {
 			server_set_status(STATUS_TYPE_STATUS, STATUS_STOP );
 			ret = 0;
