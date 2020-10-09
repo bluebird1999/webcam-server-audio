@@ -21,6 +21,7 @@
 #include "../../server/config/config_audio_interface.h"
 #include "../../server/miss/miss_interface.h"
 #include "../../server/config/config_interface.h"
+#include "../../server/miio/miio_interface.h"
 //server header
 #include "audio.h"
 
@@ -41,20 +42,14 @@ static	audio_config_t		config;
 //common
 static void *server_func(void);
 static int server_message_proc(void);
-static int server_none(void);
-static int server_wait(void);
-static int server_setup(void);
-static int server_idle(void);
-static int server_start(void);
-static int server_run(void);
-static int server_stop(void);
-static int server_restart(void);
-static int server_error(void);
 static int server_release(void);
 static int server_get_status(int type);
 static int server_set_status(int type, int st);
-static int server_check_msg_lock(void);
 static void server_thread_termination(void);
+static void task_default(void);
+static void task_start(void);
+static void task_stop(void);
+static void task_error(void);
 //specific
 static int stream_init(void);
 static int stream_destroy(void);
@@ -62,8 +57,9 @@ static int stream_start(void);
 static int stream_stop(void);
 static int audio_init(void);
 static int audio_main(void);
-static int write_miss_avbuffer(struct rts_av_buffer *data);
-static int audio_check_mode(int mode);
+static int write_audio_buffer(struct rts_av_buffer *data, int id, int target);
+static int send_message(int receiver, message_t *msg);
+static int send_iot_ack(message_t *org_msg, message_t *msg, int id, int receiver, int result, void *arg, int size);
 
 /*
  * %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -74,20 +70,56 @@ static int audio_check_mode(int mode);
 /*
  * helper
  */
-static int audio_check_mode(int mode)
+
+static int send_iot_ack(message_t *org_msg, message_t *msg, int id, int receiver, int result, void *arg, int size)
 {
-	int ret=-1,ret1=-1;
-	ret1 = pthread_rwlock_wrlock(&info.lock);
-	if(ret1) {
-		log_err("add fifo lock fail, ret = %d", ret);
-		return ret1;
-	}
-	ret = ((config.profile.run_mode) >> mode) & 0x01;
-	ret1 = pthread_rwlock_unlock(&info.lock);
-	if (ret1) {
-		log_err("add fifo unlock fail, ret = %d", ret1);
-	}
+	int ret = 0;
+    /********message body********/
+	msg_init(msg);
+	memcpy(&(msg->arg_pass), &(org_msg->arg_pass),sizeof(message_arg_t));
+	msg->message = id | 0x1000;
+	msg->sender = msg->receiver = SERVER_AUDIO;
+	msg->result = result;
+	msg->arg = arg;
+	msg->arg_size = size;
+	ret = send_message(receiver, msg);
+	/***************************/
 	return ret;
+}
+
+static int send_message(int receiver, message_t *msg)
+{
+	int st;
+	switch(receiver) {
+	case SERVER_CONFIG:
+		st = server_config_message(msg);
+		break;
+	case SERVER_DEVICE:
+		break;
+	case SERVER_KERNEL:
+		break;
+	case SERVER_REALTEK:
+		break;
+	case SERVER_MIIO:
+		st = server_miio_message(msg);
+		break;
+	case SERVER_MISS:
+		st = server_miss_message(msg);
+		break;
+	case SERVER_MICLOUD:
+		break;
+	case SERVER_AUDIO:
+		st = server_audio_message(msg);
+		break;
+	case SERVER_RECORDER:
+		break;
+	case SERVER_PLAYER:
+		break;
+	case SERVER_MANAGER:
+		st = manager_message(msg);
+		break;
+	}
+	return st;
 }
 
 static int stream_init(void)
@@ -192,13 +224,20 @@ static int audio_main(void)
 	if (rts_av_recv(stream.encoder, &buffer))
 		return 0;
 	if (buffer) {
-		if( audio_check_mode(RUN_MODE_SEND_MISS) ) {
-			if( write_miss_avbuffer(buffer)!=0 )
+		if( misc_get_bit(config.profile.run_mode, RUN_MODE_SEND_MISS)
+				&& misc_get_bit(info.status2, RUN_MODE_SEND_MISS) ) {
+			if( write_audio_buffer(buffer, MSG_MISS_AUDIO_DATA, SERVER_AUDIO) != 0 )
 				log_err("Miss ring buffer push failed!");
 		}
-		if( audio_check_mode(RUN_MODE_SAVE) ) {
-//			if( write_avbuffer(&recorder_buffer, buffer)!=0 )
-//				log_err("Recorder ring buffer push failed!");
+		if( misc_get_bit(config.profile.run_mode, RUN_MODE_SAVE)
+				&& misc_get_bit(info.status2, RUN_MODE_SAVE) ) {
+			if( write_audio_buffer(&buffer, MSG_RECORDER_AUDIO_DATA, SERVER_RECORDER) != 0 )
+				log_err("Recorder ring buffer push failed!");
+		}
+		if( misc_get_bit(config.profile.run_mode, RUN_MODE_SEND_MICLOUD)
+				&& misc_get_bit(info.status2, RUN_MODE_SEND_MICLOUD) ) {
+			if( write_audio_buffer(&buffer, MSG_MICLOUD_AUDIO_DATA, SERVER_MICLOUD) != 0 )
+				log_err("Micloud ring buffer push failed!");
 		}
 		stream.frame++;
 		rts_av_put_buffer(buffer);
@@ -206,14 +245,14 @@ static int audio_main(void)
     return ret;
 }
 
-static int write_miss_avbuffer(struct rts_av_buffer *data)
+static int write_audio_buffer(struct rts_av_buffer *data, int id, int target)
 {
-	int ret=0,ret1=-1;
+	int ret=0;
 	message_t msg;
 	av_data_info_t	info;
     /********message body********/
 	msg_init(&msg);
-	msg.message = MSG_MISS_AUDIO_DATA;
+	msg.message = id;
 	msg.extra = data->vm_addr;
 	msg.extra_size = data->bytesused;
 	info.flag = data->flags;
@@ -222,9 +261,14 @@ static int write_miss_avbuffer(struct rts_av_buffer *data)
 	info.timestamp = data->timestamp;
 	msg.arg = &info;
 	msg.arg_size = sizeof(av_data_info_t);
+	if( target == SERVER_AUDIO )
+		ret = server_miss_audio_message(&msg);
+/*	else if( target == MSG_MICLOUD_AUDIO_DATA )
+		ret = server_micloud_audio_message(&msg);
+	else if( target == MSG_RECORDER_AUDIO_DATA )
+		ret = server_recorder_audio_message(&msg);
+*/
 	/****************************/
-	server_miss_audio_message(&msg);
-	return ret;
 }
 
 static void server_thread_termination(void)
@@ -247,45 +291,6 @@ static int server_release(void)
 	return ret;
 }
 
-static int server_set_msg_lock(int type, int st)
-{
-	int ret=-1, ret1;
-	ret = pthread_rwlock_wrlock(&info.lock);
-	if(ret)	{
-		log_err("add lock fail, ret = %d", ret);
-		return ret;
-	}
-	if( !info.msg_lock ) {
-		if( type == MSG_TYPE_SET_CARE) {
-			info.msg_lock = 1;
-			ret = 0;
-		}
-	}
-	ret1 = pthread_rwlock_unlock(&info.lock);
-	if (ret1)
-		log_err("add unlock fail, ret = %d", ret1);
-	return ret;
-}
-
-static int server_check_msg_lock(void)
-{
-	int ret=1, ret1;
-	ret = pthread_rwlock_wrlock(&info.lock);
-	if(ret)	{
-		log_err("add lock fail, ret = %d", ret);
-		return ret;
-	}
-	if( info.msg_lock ) {
-		if( info.status == 0 ) {
-			info.msg_lock = 0;
-			ret = 0;
-		}
-	}
-	ret1 = pthread_rwlock_unlock(&info.lock);
-	if (ret1)
-		log_err("add unlock fail, ret = %d", ret1);
-	return ret;
-}
 
 static int server_set_status(int type, int st)
 {
@@ -295,12 +300,13 @@ static int server_set_status(int type, int st)
 		log_err("add lock fail, ret = %d", ret);
 		return ret;
 	}
-	if(type == STATUS_TYPE_STATUS)
-		info.status = st;
-	else if(type==STATUS_TYPE_EXIT)
-		info.exit = st;
-	else if(type==STATUS_TYPE_CONFIG)
-		config.status = st;
+	if(type == STATUS_TYPE_STATUS) info.status = st;
+	else if(type==STATUS_TYPE_EXIT) info.exit = st;
+	else if(type==STATUS_TYPE_CONFIG) config.status = st;
+	else if(type==STATUS_TYPE_THREAD_START) info.thread_start = st;
+	else if(type==STATUS_TYPE_THREAD_EXIT) info.thread_exit = st;
+	else if(type==STATUS_TYPE_MESSAGE_LOCK) info.msg_lock = st;
+	else if(type==STATUS_TYPE_STATUS2) info.status2 = st;
 	ret = pthread_rwlock_unlock(&info.lock);
 	if (ret)
 		log_err("add unlock fail, ret = %d", ret);
@@ -316,35 +322,37 @@ static int server_get_status(int type)
 		log_err("add lock fail, ret = %d", ret);
 		return ret;
 	}
-	if(type == STATUS_TYPE_STATUS)
-		st = info.status;
-	else if(type== STATUS_TYPE_EXIT)
-		st = info.exit;
-	else if(type==STATUS_TYPE_CONFIG)
-		st = config.status;
+	if(type == STATUS_TYPE_STATUS) st = info.status;
+	else if(type== STATUS_TYPE_EXIT) st = info.exit;
+	else if(type==STATUS_TYPE_CONFIG) st = config.status;
+	else if(type==STATUS_TYPE_THREAD_START) st = info.thread_start;
+	else if(type==STATUS_TYPE_THREAD_EXIT) st = info.thread_exit;
+	else if(type==STATUS_TYPE_MESSAGE_LOCK) st = info.msg_lock;
+	else if(type==STATUS_TYPE_STATUS2) st = info.status2;
 	ret = pthread_rwlock_unlock(&info.lock);
 	if (ret)
 		log_err("add unlock fail, ret = %d", ret);
 	return st;
 }
 
+
+/*
+ * State Machine
+ */
 static int server_message_proc(void)
 {
 	int ret = 0, ret1 = 0;
-	message_t msg;
-	message_t send_msg;
-	message_arg_t *rd;
-
+	message_t msg,send_msg;
 	msg_init(&msg);
-	msg_init(&send_msg);
-	int st;
 	ret = pthread_rwlock_wrlock(&message.lock);
 	if(ret)	{
 		log_err("add message lock fail, ret = %d\n", ret);
 		return ret;
 	}
-	if( server_check_msg_lock() )
+	if( info.msg_lock ) {
+		ret1 = pthread_rwlock_unlock(&message.lock);
 		return 0;
+	}
 	ret = msg_buffer_pop(&message, &msg);
 	ret1 = pthread_rwlock_unlock(&message.lock);
 	if (ret1) {
@@ -354,136 +362,181 @@ static int server_message_proc(void)
 		msg_free(&msg);
 		return -1;
 	}
-	else if( ret == 1) {
+	else if( ret == 1)
 		return 0;
-	}
-	server_set_msg_lock(0, 0);
-	switch(msg.message){
-	case MSG_AUDIO_START:
-		st = server_get_status(STATUS_TYPE_STATUS);
-		log_info("audio server status = %d", st);
-		if( st == STATUS_IDLE ) {
-			server_set_status(STATUS_TYPE_STATUS, STATUS_START);
-			ret = 0;
-		}
-		else if( st == STATUS_RUN )
-			ret = 0;
-		else
-			ret = -1;
-		break;
-	case MSG_AUDIO_STOP:
-		if( server_get_status(STATUS_TYPE_STATUS) == STATUS_RUN) {
-			server_set_status(STATUS_TYPE_STATUS, STATUS_STOP );
-			ret = 0;
-		}
-		else
-			ret = -1;
-		break;
-	case MSG_MANAGER_EXIT:
-		server_set_status(STATUS_TYPE_EXIT,1);
-		break;
-	case MSG_CONFIG_READ_ACK:
-		if( msg.result==0 ) {
-			memcpy( (audio_config_t*)(&config), (audio_config_t*)msg.arg, msg.arg_size);
-			if( server_get_status(STATUS_TYPE_CONFIG) == ( (1<<CONFIG_AUDIO_MODULE_NUM) -1 ) )
-				server_set_status(STATUS_TYPE_STATUS, STATUS_SETUP);
-		}
-		break;
-	case MSG_MANAGER_TIMER_ACK:
-		((HANDLER)msg.arg_in.handler)();
-		break;
+	switch(msg.message) {
+		case MSG_AUDIO_START:
+			if( msg.sender == SERVER_MISS) misc_set_bit(&info.status2, RUN_MODE_SEND_MISS, 1);
+			if( msg.sender == SERVER_MICLOUD) misc_set_bit(&info.status2, RUN_MODE_SEND_MICLOUD, 1);
+			if( msg.sender == SERVER_RECORDER) misc_set_bit(&info.status2, RUN_MODE_SAVE, 1);
+			if( info.status == STATUS_RUN ) {
+				ret = send_iot_ack(&msg, &send_msg, MSG_AUDIO_START, msg.receiver, 0, 0, 0);
+				break;
+			}
+			info.task.func = task_start;
+			info.task.start = info.status;
+			memcpy(&info.task.msg, &msg,sizeof(message_t));
+			info.msg_lock = 1;
+			break;
+		case MSG_AUDIO_STOP:
+			if( msg.sender == SERVER_MISS) misc_set_bit(&info.status2, RUN_MODE_SEND_MISS, 0);
+			if( msg.sender == SERVER_MICLOUD) misc_set_bit(&info.status2, RUN_MODE_SEND_MICLOUD, 0);
+			if( msg.sender == SERVER_RECORDER) misc_set_bit(&info.status2, RUN_MODE_SAVE, 0);
+			if( info.status != STATUS_RUN ) {
+				ret = send_iot_ack(&msg, &send_msg, MSG_AUDIO_START, msg.receiver, 0, 0, 0);
+				break;
+			}
+			if( info.status2 > 0 ) {
+				ret = send_iot_ack(&msg, &send_msg, MSG_AUDIO_START, msg.receiver, 0, 0, 0);
+				break;
+			}
+			info.task.func = task_stop;
+			info.task.start = info.status;
+			msg_deep_copy(&info.task.msg, &msg);
+			info.msg_lock = 1;
+			break;
+		case MSG_MANAGER_EXIT:
+			info.exit = 1;
+			break;
+		case MSG_CONFIG_READ_ACK:
+			if( msg.result==0 )
+				memcpy( (audio_config_t*)(&config), (audio_config_t*)msg.arg, msg.arg_size);
+			break;
+		case MSG_MANAGER_TIMER_ACK:
+			((HANDLER)msg.arg_in.handler)();
+			break;
 	}
 	msg_free(&msg);
 	return ret;
 }
 
+/*
+ * task
+ */
+/*
+ * task error: error->5 seconds->shut down server->msg manager
+ */
+static void task_error(void)
+{
+	unsigned int tick=0;
+	switch( info.status ) {
+		case STATUS_ERROR:
+			log_err("!!!!!!!!error in audio, restart in 5 s!");
+			info.tick = time_get_now_ms();
+			info.status = STATUS_NONE;
+			break;
+		case STATUS_NONE:
+			tick = time_get_now_ms();
+			if( (tick - info.tick) > 5000 ) {
+				info.exit = 1;
+				info.tick = tick;
+			}
+			break;
+	}
+	usleep(1000);
+	return;
+}
 
 /*
- * State Machine
+ * task start: idle->start
  */
-static int server_none(void)
+static void task_start(void)
 {
-	int ret = 0;
 	message_t msg;
-    /********message body********/
-	msg_init(&msg);
-	msg.message = MSG_CONFIG_READ;
-	msg.sender = msg.receiver = SERVER_AUDIO;
-	/***************************/
-	ret = server_config_message(&msg);
-	if( ret == 0 )
-		server_set_status(STATUS_TYPE_STATUS, STATUS_WAIT);
-	else
-		sleep(1);
-	return ret;
+	int ret;
+	switch(info.status){
+		case STATUS_RUN:
+			ret = send_iot_ack(&info.task.msg, &msg, MSG_AUDIO_START, info.task.msg.receiver, 0, 0, 0);
+			goto exit;
+			break;
+		case STATUS_IDLE:
+			info.status = STATUS_START;
+			break;
+		case STATUS_START:
+			if( stream_start()==0 ) info.status = STATUS_RUN;
+			else info.status = STATUS_ERROR;
+			break;
+		case STATUS_ERROR:
+			ret = send_iot_ack(&info.task.msg, &msg, MSG_AUDIO_START, info.task.msg.receiver, -1 ,0 ,0);
+			goto exit;
+			break;
+	}
+	usleep(1000);
+	return;
+exit:
+	info.task.func = &task_default;
+	info.msg_lock = 0;
+	msg_free(&info.task.msg);
+	return;
 }
-
-static int server_wait(void)
+/*
+ * task start: run->stop->idle
+ */
+static void task_stop(void)
 {
-	int ret = 0;
-	usleep(50000);
-	return ret;
+	message_t msg;
+	int ret;
+	switch(info.status){
+		case STATUS_IDLE:
+			ret = send_iot_ack(&info.task.msg, &msg, MSG_AUDIO_STOP, info.task.msg.receiver, 0, 0, 0);
+			goto exit;
+			break;
+		case STATUS_RUN:
+			if( stream_stop()==0 ) info.status = STATUS_IDLE;
+			else info.status = STATUS_ERROR;
+			break;
+		case STATUS_ERROR:
+			ret = send_iot_ack(&info.task.msg, &msg, MSG_AUDIO_STOP, info.task.msg.receiver, -1,0 ,0);
+			break;
+	}
+	usleep(1000);
+	return;
+exit:
+	info.task.func = &task_default;
+	info.msg_lock = 0;
+	msg_free(&info.task.msg);
+	return;
 }
-
-static int server_setup(void)
+/*
+ * default task: none->run
+ */
+static void task_default(void)
 {
+	message_t msg;
 	int ret = 0;
-	if( audio_init() == 0)
-		server_set_status(STATUS_TYPE_STATUS, STATUS_IDLE);
-	else
-		server_set_status(STATUS_TYPE_STATUS, STATUS_ERROR);
-	return ret;
-}
-
-static int server_idle(void)
-{
-	int ret = 0;
-	usleep(50000);
-	return ret;
-}
-
-static int server_start(void)
-{
-	int ret = 0;
-	if( stream_start()==0 )
-		server_set_status(STATUS_TYPE_STATUS, STATUS_RUN);
-	else
-		server_set_status(STATUS_TYPE_STATUS, STATUS_ERROR);
-	return ret;
-}
-
-static int server_run(void)
-{
-	int ret = 0;
-	if(audio_main()!=0)
-		server_set_status(STATUS_TYPE_STATUS, STATUS_STOP);
-	return ret;
-}
-
-static int server_stop(void)
-{
-	int ret = 0;
-	if( stream_stop()==0 )
-		server_set_status(STATUS_TYPE_STATUS,STATUS_IDLE);
-	else
-		server_set_status(STATUS_TYPE_STATUS,STATUS_ERROR);
-	return ret;
-}
-
-static int server_restart(void)
-{
-	int ret = 0;
-	server_release();
-	server_set_status(STATUS_TYPE_STATUS,STATUS_WAIT);
-	return ret;
-}
-
-static int server_error(void)
-{
-	int ret = 0;
-	server_release();
-	log_err("!!!!!!!!error in audio!!!!!!!!");
-	return ret;
+	switch( info.status){
+		case STATUS_NONE:
+		    /********message body********/
+			msg_init(&msg);
+			msg.message = MSG_CONFIG_READ;
+			msg.sender = msg.receiver = SERVER_AUDIO;
+			ret = server_config_message(&msg);
+			/***************************/
+			if( !ret ) info.status = STATUS_WAIT;
+			else sleep(1);
+			break;
+		case STATUS_WAIT:
+			if( config.status == ( (1<<CONFIG_AUDIO_MODULE_NUM) -1 ) )
+				info.status = STATUS_SETUP;
+			else usleep(1000);
+			break;
+		case STATUS_SETUP:
+			if( audio_init() == 0) info.status = STATUS_IDLE;
+			else info.status = STATUS_ERROR;
+			break;
+		case STATUS_RUN:
+			if(audio_main()!=0) info.status = STATUS_STOP;
+			break;
+		case STATUS_STOP:
+			if( stream_stop()==0 ) info.status = STATUS_IDLE;
+			else info.status = STATUS_ERROR;
+			break;
+		case STATUS_ERROR:
+			info.task.func = task_error;
+			break;
+		}
+	usleep(1000);
+	return;
 }
 
 static void *server_func(void)
@@ -492,46 +545,26 @@ static void *server_func(void)
     signal(SIGTERM, server_thread_termination);
 	misc_set_thread_name("server_audio");
 	pthread_detach(pthread_self());
-	while( !server_get_status(STATUS_TYPE_EXIT) ) {
-	switch( server_get_status(STATUS_TYPE_STATUS) ){
-		case STATUS_NONE:
-			server_none();
-			break;
-		case STATUS_WAIT:
-			server_wait();
-			break;
-		case STATUS_SETUP:
-			server_setup();
-			break;
-		case STATUS_IDLE:
-			server_idle();
-			break;
-		case STATUS_START:
-			server_start();
-			break;
-		case STATUS_RUN:
-			server_run();
-			break;
-		case STATUS_STOP:
-			server_stop();
-			break;
-		case STATUS_RESTART:
-			server_restart();
-			break;
-		case STATUS_ERROR:
-			server_error();
-			break;
-		}
+	//default task
+	info.task.func = task_default;
+	info.task.start = STATUS_NONE;
+	info.task.end = STATUS_RUN;
+	while( !info.exit ) {
+		info.task.func();
 		server_message_proc();
 	}
+	if( info.exit ) {
+		while( info.thread_exit != info.thread_start ) {
+		}
+	    /********message body********/
+		message_t msg;
+		msg_init(&msg);
+		msg.message = MSG_MANAGER_EXIT_ACK;
+		msg.sender = SERVER_AUDIO;
+		manager_message(&msg);
+		/***************************/
+	}
 	server_release();
-	message_t msg;
-	/********message body********/
-	msg_init(&msg);
-	msg.message = MSG_MANAGER_EXIT_ACK;
-	msg.sender = SERVER_AUDIO;
-	/***************************/
-	manager_message(&msg);
 	log_info("-----------thread exit: server_audio-----------");
 	pthread_exit(0);
 }
