@@ -224,22 +224,24 @@ static int audio_main(void)
 	if (rts_av_recv(stream.encoder, &buffer))
 		return 0;
 	if (buffer) {
-		if( misc_get_bit(config.profile.run_mode, RUN_MODE_SEND_MISS)
-				&& misc_get_bit(info.status2, RUN_MODE_SEND_MISS) ) {
-			if( write_audio_buffer(buffer, MSG_MISS_AUDIO_DATA, SERVER_AUDIO) != 0 )
-				log_err("Miss ring buffer push failed!");
+		if( buffer->bytesused <= 1024*100 ) {
+			if( misc_get_bit(config.profile.run_mode, RUN_MODE_SEND_MISS)
+					&& misc_get_bit(info.status2, RUN_MODE_SEND_MISS) ) {
+				if( write_audio_buffer(buffer, MSG_MISS_AUDIO_DATA, SERVER_AUDIO) != 0 )
+					log_err("Miss ring buffer push failed!");
+			}
+			if( misc_get_bit(config.profile.run_mode, RUN_MODE_SAVE)
+					&& misc_get_bit(info.status2, RUN_MODE_SAVE) ) {
+				if( write_audio_buffer(buffer, MSG_RECORDER_AUDIO_DATA, SERVER_RECORDER) != 0 )
+					log_err("Recorder ring buffer push failed!");
+			}
+			if( misc_get_bit(config.profile.run_mode, RUN_MODE_SEND_MICLOUD)
+					&& misc_get_bit(info.status2, RUN_MODE_SEND_MICLOUD) ) {
+				if( write_audio_buffer(buffer, MSG_MICLOUD_AUDIO_DATA, SERVER_MICLOUD) != 0 )
+					log_err("Micloud ring buffer push failed!");
+			}
+			stream.frame++;
 		}
-		if( misc_get_bit(config.profile.run_mode, RUN_MODE_SAVE)
-				&& misc_get_bit(info.status2, RUN_MODE_SAVE) ) {
-			if( write_audio_buffer(&buffer, MSG_RECORDER_AUDIO_DATA, SERVER_RECORDER) != 0 )
-				log_err("Recorder ring buffer push failed!");
-		}
-		if( misc_get_bit(config.profile.run_mode, RUN_MODE_SEND_MICLOUD)
-				&& misc_get_bit(info.status2, RUN_MODE_SEND_MICLOUD) ) {
-			if( write_audio_buffer(&buffer, MSG_MICLOUD_AUDIO_DATA, SERVER_MICLOUD) != 0 )
-				log_err("Micloud ring buffer push failed!");
-		}
-		stream.frame++;
 		rts_av_put_buffer(buffer);
 	}
     return ret;
@@ -263,11 +265,11 @@ static int write_audio_buffer(struct rts_av_buffer *data, int id, int target)
 	msg.arg_size = sizeof(av_data_info_t);
 	if( target == SERVER_AUDIO )
 		ret = server_miss_audio_message(&msg);
-/*	else if( target == MSG_MICLOUD_AUDIO_DATA )
-		ret = server_micloud_audio_message(&msg);
+//	else if( target == MSG_MICLOUD_AUDIO_DATA )
+//		ret = server_micloud_audio_message(&msg);
 	else if( target == MSG_RECORDER_AUDIO_DATA )
 		ret = server_recorder_audio_message(&msg);
-*/
+	return ret;
 	/****************************/
 }
 
@@ -410,6 +412,26 @@ static int server_message_proc(void)
 	return ret;
 }
 
+static int heart_beat_proc(void)
+{
+	int ret = 0;
+	message_t msg;
+	long long int tick = 0;
+	tick = time_get_now_stamp();
+	if( (tick - info.tick) > 10 ) {
+		info.tick = tick;
+	    /********message body********/
+		msg_init(&msg);
+		msg.message = MSG_MANAGER_HEARTBEAT;
+		msg.sender = msg.receiver = SERVER_AUDIO;
+		msg.arg_in.cat = info.status;
+		msg.arg_in.dog = info.thread_start;
+		ret = manager_message(&msg);
+		/***************************/
+	}
+	return ret;
+}
+
 /*
  * task
  */
@@ -422,12 +444,12 @@ static void task_error(void)
 	switch( info.status ) {
 		case STATUS_ERROR:
 			log_err("!!!!!!!!error in audio, restart in 5 s!");
-			info.tick = time_get_now_ms();
+			info.tick = time_get_now_stamp();
 			info.status = STATUS_NONE;
 			break;
 		case STATUS_NONE:
-			tick = time_get_now_ms();
-			if( (tick - info.tick) > 5000 ) {
+			tick = time_get_now_stamp();
+			if( (tick - info.tick) > 5 ) {
 				info.exit = 1;
 				info.tick = tick;
 			}
@@ -552,6 +574,7 @@ static void *server_func(void)
 	while( !info.exit ) {
 		info.task.func();
 		server_message_proc();
+		heart_beat_proc();
 	}
 	if( info.exit ) {
 		while( info.thread_exit != info.thread_start ) {
