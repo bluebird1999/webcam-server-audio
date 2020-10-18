@@ -15,18 +15,19 @@
 #include <rtscamkit.h>
 #include <rtsavapi.h>
 #include <rtsaudio.h>
+#include <malloc.h>
+#include <dmalloc.h>
 //program header
 #include "../../server/realtek/realtek_interface.h"
 #include "../../tools/tools_interface.h"
-#include "../../server/config/config_audio_interface.h"
 #include "../../server/miss/miss_interface.h"
-#include "../../server/config/config_interface.h"
 #include "../../server/miio/miio_interface.h"
-//server header
-#include "audio.h"
-
 #include "../../manager/global_interface.h"
 #include "../../manager/manager_interface.h"
+#include "../../server/recorder/recorder_interface.h"
+//server header
+#include "audio.h"
+#include "config.h"
 #include "audio_interface.h"
 
 /*
@@ -60,6 +61,7 @@ static int audio_main(void);
 static int write_audio_buffer(struct rts_av_buffer *data, int id, int target);
 static int send_message(int receiver, message_t *msg);
 static int send_iot_ack(message_t *org_msg, message_t *msg, int id, int receiver, int result, void *arg, int size);
+static int audio_get_iot_config(audio_iot_config_t *tmp);
 
 /*
  * %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -70,6 +72,15 @@ static int send_iot_ack(message_t *org_msg, message_t *msg, int id, int receiver
 /*
  * helper
  */
+static int audio_get_iot_config(audio_iot_config_t *tmp)
+{
+	int ret = 0, st;
+	memset(tmp,0,sizeof(audio_iot_config_t));
+	st = info.status;
+	if( st <= STATUS_WAIT ) return -1;
+	tmp->format = config.capture.format;
+	return ret;
+}
 
 static int send_iot_ack(message_t *org_msg, message_t *msg, int id, int receiver, int result, void *arg, int size)
 {
@@ -91,9 +102,6 @@ static int send_message(int receiver, message_t *msg)
 {
 	int st;
 	switch(receiver) {
-	case SERVER_CONFIG:
-		st = server_config_message(msg);
-		break;
 	case SERVER_DEVICE:
 		break;
 	case SERVER_KERNEL:
@@ -225,21 +233,20 @@ static int audio_main(void)
 		return 0;
 	if (buffer) {
 		if( buffer->bytesused <= 1024*100 ) {
-			if( misc_get_bit(config.profile.run_mode, RUN_MODE_SEND_MISS)
-					&& misc_get_bit(info.status2, RUN_MODE_SEND_MISS) ) {
+			if( misc_get_bit(info.status2, RUN_MODE_SEND_MISS) ) {
 				if( write_audio_buffer(buffer, MSG_MISS_AUDIO_DATA, SERVER_AUDIO) != 0 )
 					log_err("Miss ring buffer push failed!");
 			}
-			if( misc_get_bit(config.profile.run_mode, RUN_MODE_SAVE)
-					&& misc_get_bit(info.status2, RUN_MODE_SAVE) ) {
+			if( misc_get_bit(info.status2, RUN_MODE_SAVE) ) {
 				if( write_audio_buffer(buffer, MSG_RECORDER_AUDIO_DATA, SERVER_RECORDER) != 0 )
 					log_err("Recorder ring buffer push failed!");
 			}
-			if( misc_get_bit(config.profile.run_mode, RUN_MODE_SEND_MICLOUD)
-					&& misc_get_bit(info.status2, RUN_MODE_SEND_MICLOUD) ) {
+/* wait for other server
+			if( misc_get_bit(info.status2, RUN_MODE_SEND_MICLOUD) ) {
 				if( write_audio_buffer(buffer, MSG_MICLOUD_AUDIO_DATA, SERVER_MICLOUD) != 0 )
 					log_err("Micloud ring buffer push failed!");
 			}
+*/
 			stream.frame++;
 		}
 		rts_av_put_buffer(buffer);
@@ -345,6 +352,7 @@ static int server_message_proc(void)
 {
 	int ret = 0, ret1 = 0;
 	message_t msg,send_msg;
+	audio_iot_config_t tmp;
 	msg_init(&msg);
 	ret = pthread_rwlock_wrlock(&message.lock);
 	if(ret)	{
@@ -400,12 +408,16 @@ static int server_message_proc(void)
 		case MSG_MANAGER_EXIT:
 			info.exit = 1;
 			break;
-		case MSG_CONFIG_READ_ACK:
-			if( msg.result==0 )
-				memcpy( (audio_config_t*)(&config), (audio_config_t*)msg.arg, msg.arg_size);
-			break;
 		case MSG_MANAGER_TIMER_ACK:
 			((HANDLER)msg.arg_in.handler)();
+			break;
+		case MSG_AUDIO_GET_PARA:
+			ret = audio_get_iot_config(&tmp);
+			send_iot_ack(&msg, &send_msg, MSG_AUDIO_GET_PARA, msg.receiver, ret,
+					&tmp, sizeof(audio_iot_config_t));
+			break;
+		default:
+			log_err("not processed message = %d", msg.message);
 			break;
 	}
 	msg_free(&msg);
@@ -528,12 +540,7 @@ static void task_default(void)
 	int ret = 0;
 	switch( info.status){
 		case STATUS_NONE:
-		    /********message body********/
-			msg_init(&msg);
-			msg.message = MSG_CONFIG_READ;
-			msg.sender = msg.receiver = SERVER_AUDIO;
-			ret = server_config_message(&msg);
-			/***************************/
+			ret = config_audio_read(&config);
 			if( !ret ) info.status = STATUS_WAIT;
 			else sleep(1);
 			break;
@@ -577,7 +584,7 @@ static void *server_func(void)
 		heart_beat_proc();
 	}
 	if( info.exit ) {
-		while( info.thread_exit != info.thread_start ) {
+		while( info.thread_start ) {
 		}
 	    /********message body********/
 		message_t msg;

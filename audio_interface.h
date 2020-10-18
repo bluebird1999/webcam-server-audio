@@ -16,7 +16,7 @@
 /*
  * define
  */
-#define		SERVER_AUDIO_VERSION_STRING			"alpha-3.2"
+#define		SERVER_AUDIO_VERSION_STRING			"alpha-3.4"
 
 #define		MSG_AUDIO_BASE						(SERVER_AUDIO<<16)
 #define		MSG_AUDIO_SIGINT					MSG_AUDIO_BASE | 0x0000
@@ -38,6 +38,9 @@
 /*
  * structure
  */
+typedef struct audio_iot_config_t {
+	int 	format;
+} audio_iot_config_t;
 
 /*
  * function
