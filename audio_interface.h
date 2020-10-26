@@ -16,7 +16,7 @@
 /*
  * define
  */
-#define		SERVER_AUDIO_VERSION_STRING			"alpha-3.4"
+#define		SERVER_AUDIO_VERSION_STRING			"alpha-3.5"
 
 #define		MSG_AUDIO_BASE						(SERVER_AUDIO<<16)
 #define		MSG_AUDIO_SIGINT					MSG_AUDIO_BASE | 0x0000

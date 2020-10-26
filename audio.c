@@ -17,6 +17,7 @@
 #include <rtsaudio.h>
 #include <malloc.h>
 #include <dmalloc.h>
+#include <miss.h>
 //program header
 #include "../../server/realtek/realtek_interface.h"
 #include "../../tools/tools_interface.h"
@@ -77,7 +78,7 @@ static int audio_get_iot_config(audio_iot_config_t *tmp)
 	int ret = 0, st;
 	memset(tmp,0,sizeof(audio_iot_config_t));
 	st = info.status;
-	if( st <= STATUS_WAIT ) return -1;
+	if( st < STATUS_WAIT ) return -1;
 	tmp->format = config.capture.format;
 	return ret;
 }
@@ -261,13 +262,14 @@ static int write_audio_buffer(struct rts_av_buffer *data, int id, int target)
 	av_data_info_t	info;
     /********message body********/
 	msg_init(&msg);
+	msg.sender = msg.receiver = SERVER_AUDIO;
 	msg.message = id;
 	msg.extra = data->vm_addr;
 	msg.extra_size = data->bytesused;
 	info.flag = data->flags;
 	info.frame_index = data->frame_idx;
-	info.index = data->index;
-	info.timestamp = data->timestamp;
+	info.timestamp = data->timestamp / 1000;	// ms = us/1000
+	info.flag = FLAG_AUDIO_SAMPLE_8K << 3 | FLAG_AUDIO_DATABITS_8 << 7 | FLAG_AUDIO_CHANNEL_MONO << 9 |  FLAG_RESOLUTION_AUDIO_DEFAULT << 17;
 	msg.arg = &info;
 	msg.arg_size = sizeof(av_data_info_t);
 	if( target == SERVER_AUDIO )
@@ -438,6 +440,7 @@ static int heart_beat_proc(void)
 		msg.sender = msg.receiver = SERVER_AUDIO;
 		msg.arg_in.cat = info.status;
 		msg.arg_in.dog = info.thread_start;
+		msg.arg_in.duck = info.thread_exit;
 		ret = manager_message(&msg);
 		/***************************/
 	}
@@ -536,18 +539,26 @@ exit:
  */
 static void task_default(void)
 {
-	message_t msg;
 	int ret = 0;
 	switch( info.status){
 		case STATUS_NONE:
-			ret = config_audio_read(&config);
-			if( !ret ) info.status = STATUS_WAIT;
-			else sleep(1);
+			if( !misc_get_bit( info.thread_exit, AUDIO_INIT_CONDITION_CONFIG ) ) {
+				ret = config_audio_read(&config);
+				if( !ret && misc_full_bit(config.status, CONFIG_AUDIO_MODULE_NUM) ) {
+					misc_set_bit(&info.thread_exit, AUDIO_INIT_CONDITION_CONFIG, 1);
+				}
+				else {
+					info.status = STATUS_ERROR;
+					break;
+				}
+			}
+			if( misc_full_bit( info.thread_exit, AUDIO_INIT_CONDITION_NUM ) )
+				info.status = STATUS_WAIT;
+			else
+				usleep(100000);
 			break;
 		case STATUS_WAIT:
-			if( config.status == ( (1<<CONFIG_AUDIO_MODULE_NUM) -1 ) )
-				info.status = STATUS_SETUP;
-			else usleep(1000);
+			info.status = STATUS_SETUP;
 			break;
 		case STATUS_SETUP:
 			if( audio_init() == 0) info.status = STATUS_IDLE;

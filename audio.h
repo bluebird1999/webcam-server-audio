@@ -19,6 +19,9 @@
 #define RUN_MODE_SEND_MISS		1
 #define	RUN_MODE_SEND_MICLOUD	2
 
+#define		AUDIO_INIT_CONDITION_NUM				1
+#define		AUDIO_INIT_CONDITION_CONFIG				0
+
 /*
  * structure
  */
