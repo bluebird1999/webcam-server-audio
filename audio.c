@@ -16,7 +16,6 @@
 #include <rtsavapi.h>
 #include <rtsaudio.h>
 #include <malloc.h>
-#include <dmalloc.h>
 #include <miss.h>
 //program header
 #include "../../server/realtek/realtek_interface.h"
@@ -39,6 +38,7 @@ static 	message_buffer_t	message;
 static 	server_info_t 		info;
 static	audio_stream_t		stream;
 static	audio_config_t		config;
+static 	unsigned long long int		tick = 0;
 
 //function
 //common
@@ -116,7 +116,7 @@ static int send_message(int receiver, message_t *msg)
 			st = manager_message(msg);
 			break;
 		default:
-			log_err("unknown message target! %d", receiver);
+			log_qcy(DEBUG_SERIOUS, "unknown message target! %d", receiver);
 			break;
 	}
 	return st;
@@ -150,7 +150,7 @@ static int stream_start(void)
 	if( stream.capture != -1 ) {
 		ret = rts_av_enable_chn(stream.capture);
 		if (ret) {
-			log_err("enable capture fail, ret = %d", ret);
+			log_qcy(DEBUG_SERIOUS, "enable capture fail, ret = %d", ret);
 			return -1;
 		}
 	}
@@ -160,7 +160,7 @@ static int stream_start(void)
 	if( stream.encoder != -1 ) {
 		ret = rts_av_enable_chn(stream.encoder);
 		if (ret) {
-			log_err("enable encoder fail, ret = %d", ret);
+			log_qcy(DEBUG_SERIOUS, "enable encoder fail, ret = %d", ret);
 			return -1;
 		}
 	}
@@ -170,7 +170,7 @@ static int stream_start(void)
 	stream.frame = 0;
     ret = rts_av_start_recv(stream.encoder);
     if (ret) {
-    	log_err("start recv audio fail, ret = %d", ret);
+    	log_qcy(DEBUG_SERIOUS, "start recv audio fail, ret = %d", ret);
     	return -1;
     }
     return 0;
@@ -195,19 +195,19 @@ static int audio_init(void)
 	stream_init();
 	stream.capture = rts_av_create_audio_capture_chn(&config.capture);
 	if (stream.capture < 0) {
-		log_err("fail to create audio capture chn, ret = %d", stream.capture);
+		log_qcy(DEBUG_SERIOUS, "fail to create audio capture chn, ret = %d", stream.capture);
 		return -1;
 	}
-	log_info("capture chnno:%d", stream.capture);
+	log_qcy(DEBUG_INFO, "capture chnno:%d", stream.capture);
 	stream.encoder = rts_av_create_audio_encode_chn(RTS_AUDIO_TYPE_ID_ALAW, 0);
 	if (stream.encoder < 0) {
-		log_err("fail to create audio encoder chn, ret = %d", stream.encoder);
+		log_qcy(DEBUG_SERIOUS, "fail to create audio encoder chn, ret = %d", stream.encoder);
 		return -1;
 	}
-	log_info("encoder chnno:%d", stream.encoder);
+	log_qcy(DEBUG_INFO, "encoder chnno:%d", stream.encoder);
     ret = rts_av_bind(stream.capture, stream.encoder);
     if (ret) {
-    	log_err("fail to bind capture and encode, ret = %d\n", ret);
+    	log_qcy(DEBUG_SERIOUS, "fail to bind capture and encode, ret = %d", ret);
     	return -1;
     }
 	return 0;
@@ -227,20 +227,20 @@ static int audio_main(void)
 		if( buffer->bytesused <= 1024*100 ) {
 			if( misc_get_bit(info.status2, RUN_MODE_SEND_MISS) ) {
 				if( write_audio_buffer(buffer, MSG_MISS_AUDIO_DATA, SERVER_MISS, 0) != 0 )
-					log_err("Miss ring buffer push failed!");
+					log_qcy(DEBUG_WARNING, "Miss ring buffer push failed!");
 			}
 			if( misc_get_bit(info.status2, RUN_MODE_SAVE) ) {
 				if( write_audio_buffer(buffer, MSG_RECORDER_AUDIO_DATA, SERVER_RECORDER, RECORDER_TYPE_NORMAL) != 0 )
-					log_err("Recorder ring buffer push failed!");
+					log_qcy(DEBUG_WARNING, "Recorder ring buffer push failed!");
 			}
 			if( misc_get_bit(info.status2, RUN_MODE_MOTION_DETECT) ) {
 				if( write_audio_buffer(buffer, MSG_RECORDER_AUDIO_DATA, SERVER_RECORDER, RECORDER_TYPE_MOTION_DETECTION) != 0 )
-					log_err("Recorder ring buffer push failed!");
+					log_qcy(DEBUG_WARNING, "Recorder ring buffer push failed!");
 			}
 /* wait for other server
 			if( misc_get_bit(info.status2, RUN_MODE_SEND_MICLOUD) ) {
 				if( write_audio_buffer(buffer, MSG_MICLOUD_AUDIO_DATA, SERVER_MICLOUD) != 0 )
-					log_err("Micloud ring buffer push failed!");
+					log_qcy(DEBUG_SERIOUS, "Micloud ring buffer push failed!");
 			}
 */
 			stream.frame++;
@@ -312,7 +312,7 @@ static int server_message_proc(void)
 	msg_init(&msg);
 	ret = pthread_rwlock_wrlock(&message.lock);
 	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add message lock fail, ret = %d", ret);
 		return ret;
 	}
 	if( info.msg_lock ) {
@@ -322,7 +322,7 @@ static int server_message_proc(void)
 	ret = msg_buffer_pop(&message, &msg);
 	ret1 = pthread_rwlock_unlock(&message.lock);
 	if (ret1) {
-		log_err("add message unlock fail, ret = %d\n", ret1);
+		log_qcy(DEBUG_SERIOUS, "add message unlock fail, ret = %d", ret1);
 	}
 	if( ret == -1) {
 		msg_free(&msg);
@@ -392,7 +392,7 @@ static int server_message_proc(void)
 			}
 			break;
 		default:
-			log_err("not processed message = %d", msg.message);
+			log_qcy(DEBUG_SERIOUS, "not processed message = %d", msg.message);
 			break;
 	}
 	msg_free(&msg);
@@ -431,19 +431,19 @@ static void task_error(void)
 	unsigned int tick=0;
 	switch( info.status ) {
 		case STATUS_ERROR:
-			log_err("!!!!!!!!error in audio, restart in 5 s!");
-			info.tick = time_get_now_stamp();
+			log_qcy(DEBUG_SERIOUS, "!!!!!!!!error in audio, restart in 5 s!");
+			info.tick3 = time_get_now_stamp();
 			info.status = STATUS_NONE;
 			break;
 		case STATUS_NONE:
 			tick = time_get_now_stamp();
-			if( (tick - info.tick) > SERVER_RESTART_PAUSE ) {
+			if( (tick - info.tick3) > SERVER_RESTART_PAUSE ) {
 				info.exit = 1;
-				info.tick = tick;
+				info.tick3 = tick;
 			}
 			break;
 		default:
-			log_err("!!!!!!!unprocessed server status in task_error = %d", info.status);
+			log_qcy(DEBUG_SERIOUS, "!!!!!!!unprocessed server status in task_error = %d", info.status);
 			break;
 	}
 	usleep(1000);
@@ -482,7 +482,7 @@ static void task_start(void)
 			goto exit;
 			break;
 		default:
-			log_err("!!!!!!!unprocessed server status in task_start = %d", info.status);
+			log_qcy(DEBUG_SERIOUS, "!!!!!!!unprocessed server status in task_start = %d", info.status);
 			break;
 	}
 	usleep(1000);
@@ -521,7 +521,7 @@ static void task_stop(void)
 			send_message(info.task.msg.receiver, &msg);
 			break;
 		default:
-			log_err("!!!!!!!unprocessed server status in task_stop = %d", info.status);
+			log_qcy(DEBUG_SERIOUS, "!!!!!!!unprocessed server status in task_stop = %d", info.status);
 			break;
 	}
 	usleep(1000);
@@ -551,7 +551,9 @@ static void task_default(void)
 					break;
 				}
 			}
-			if( !misc_get_bit( info.thread_exit, AUDIO_INIT_CONDITION_REALTEK ) ) {
+			if( !misc_get_bit( info.thread_exit, AUDIO_INIT_CONDITION_REALTEK ) &&
+					((time_get_now_stamp() - info.tick2 ) > MESSAGE_RESENT) ) {
+				info.tick2 = time_get_now_stamp();
 			    /********message body********/
 				msg_init(&msg);
 				msg.message = MSG_REALTEK_PROPERTY_GET;
@@ -562,8 +564,6 @@ static void task_default(void)
 			}
 			if( misc_full_bit( info.thread_exit, AUDIO_INIT_CONDITION_NUM ) )
 				info.status = STATUS_WAIT;
-			else
-				sleep(1);
 			break;
 		case STATUS_WAIT:
 			info.status = STATUS_SETUP;
@@ -585,9 +585,10 @@ static void task_default(void)
 			info.task.func = task_error;
 			break;
 		default:
-			log_err("!!!!!!!unprocessed server status in task_default = %d", info.status);
+			log_qcy(DEBUG_SERIOUS, "!!!!!!!unprocessed server status in task_default = %d", info.status);
 			break;
 		}
+	tick++;
 	usleep(1000);
 	return;
 }
@@ -607,8 +608,7 @@ static void *server_func(void)
 	while( !info.exit ) {
 		info.task.func();
 		server_message_proc();
-		if( info.status!=STATUS_ERROR )
-			heart_beat_proc();
+		heart_beat_proc();
 	}
 	if( info.exit ) {
 		while( info.thread_start ) {
@@ -622,7 +622,7 @@ static void *server_func(void)
 		/***************************/
 	}
 	server_release();
-	log_info("-----------thread exit: server_audio-----------");
+	log_qcy(DEBUG_SERIOUS, "-----------thread exit: server_audio-----------");
 	pthread_exit(0);
 }
 
@@ -635,11 +635,11 @@ int server_audio_start(void)
 	int ret=-1;
 	ret = pthread_create(&info.id, NULL, server_func, NULL);
 	if(ret != 0) {
-		log_err("audio server create error! ret = %d",ret);
+		log_qcy(DEBUG_SERIOUS, "audio server create error! ret = %d",ret);
 		 return ret;
 	 }
 	else {
-		log_err("audio server create successful!");
+		log_qcy(DEBUG_INFO, "audio server create successful!");
 		return 0;
 	}
 }
@@ -648,20 +648,21 @@ int server_audio_message(message_t *msg)
 {
 	int ret=0,ret1;
 	if( !message.init ) {
-		log_err("audio server is not ready for message processing!");
+		log_qcy(DEBUG_INFO, "audio server is not ready for message processing!");
 		return -1;
 	}
 	ret = pthread_rwlock_wrlock(&message.lock);
 	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add message lock fail, ret = %d", ret);
 		return ret;
 	}
 	ret = msg_buffer_push(&message, msg);
-	log_info("push into the audio message queue: sender=%d, message=%x, ret=%d", msg->sender, msg->message, ret);
+	log_qcy(DEBUG_VERBOSE, "push into the audio message queue: sender=%d, message=%x, ret=%d, head=%d, tail=%d", msg->sender, msg->message, ret,
+			message.head, message.tail);
 	if( ret!=0 )
-		log_err("message push in audio error =%d", ret);
+		log_qcy(DEBUG_WARNING, "message push in audio error =%d", ret);
 	ret1 = pthread_rwlock_unlock(&message.lock);
 	if (ret1)
-		log_err("add message unlock fail, ret = %d\n", ret1);
+		log_qcy(DEBUG_SERIOUS, "add message unlock fail, ret = %d", ret1);
 	return ret;
 }

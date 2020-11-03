@@ -19,8 +19,8 @@
 #define		CONFIG_AUDIO_PROFILE			0
 #define		CONFIG_AUDIO_CAPTURE			1
 
-#define 	CONFIG_AUDIO_PROFILE_PATH					"/opt/qcy/config/audio_profile.config"
-#define 	CONFIG_AUDIO_CAPTURE_PATH					"/opt/qcy/config/audio_capture.config"
+#define 	CONFIG_AUDIO_PROFILE_PATH					"config/audio_profile.config"
+#define 	CONFIG_AUDIO_CAPTURE_PATH					"config/audio_capture.config"
 
 /*
  * structure
