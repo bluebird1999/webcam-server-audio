@@ -392,7 +392,7 @@ static int server_message_proc(void)
 			}
 			break;
 		default:
-			log_qcy(DEBUG_SERIOUS, "not processed message = %d", msg.message);
+			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
 			break;
 	}
 	msg_free(&msg);
