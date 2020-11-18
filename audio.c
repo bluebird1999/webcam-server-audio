@@ -465,6 +465,34 @@ static void task_start(void)
 	msg.result = 0;
 	/***************************/
 	switch( info.status ){
+		case STATUS_NONE:
+			if( !misc_get_bit( info.thread_exit, AUDIO_INIT_CONDITION_CONFIG ) ) {
+				ret = config_audio_read(&config);
+				if( !ret && misc_full_bit( config.status, CONFIG_AUDIO_MODULE_NUM) ) {
+					misc_set_bit(&info.thread_exit, AUDIO_INIT_CONDITION_CONFIG, 1);
+				}
+				else {
+					info.status = STATUS_ERROR;
+					break;
+				}
+			}
+			if( !misc_get_bit( info.thread_exit, AUDIO_INIT_CONDITION_REALTEK ) &&
+					((time_get_now_stamp() - info.tick2 ) > MESSAGE_RESENT) ) {
+				info.tick2 = time_get_now_stamp();
+				/********message body********/
+				msg_init(&msg);
+				msg.message = MSG_REALTEK_PROPERTY_GET;
+				msg.sender = msg.receiver = SERVER_AUDIO;
+				msg.arg_in.cat = REALTEK_PROPERTY_AV_STATUS;
+				server_realtek_message(&msg);
+				/****************************/
+			}
+			if( misc_full_bit( info.thread_exit, AUDIO_INIT_CONDITION_NUM ) )
+				info.status = STATUS_WAIT;
+			break;
+		case STATUS_WAIT:
+			info.status = STATUS_SETUP;
+			break;
 		case STATUS_RUN:
 			send_message(info.task.msg.receiver, &msg);
 			goto exit;
