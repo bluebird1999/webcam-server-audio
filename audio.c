@@ -493,6 +493,10 @@ static void task_start(void)
 		case STATUS_WAIT:
 			info.status = STATUS_SETUP;
 			break;
+		case STATUS_SETUP:
+			if( audio_init() == 0) info.status = STATUS_IDLE;
+			else info.status = STATUS_ERROR;
+			break;
 		case STATUS_RUN:
 			send_message(info.task.msg.receiver, &msg);
 			goto exit;
