@@ -24,12 +24,14 @@
  * static
  */
 //variable
-static pthread_rwlock_t				lock;
 static int							dirty;
 static audio_config_t				audio_config;
 
 static config_map_t audio_config_profile_map[] = {
-    {"enable", 			&(audio_config.profile.enable), 		cfg_u32, 0,0,0,64,},
+		{"enable", 				&(audio_config.profile.enable), 		cfg_u32, 1,0,0,1,},
+		{"aec_enable",			&(audio_config.profile.aec_enable),		cfg_u32, 1,0,0,1,},
+		{"ns_enable",			&(audio_config.profile.ns_enable),		cfg_u32, 1,0,0,1,},
+		{"ns_level",			&(audio_config.profile.ns_level),		cfg_u32, 1,0,0,100,},
     {NULL,},
 };
 
@@ -59,11 +61,6 @@ static int audio_config_save(void)
 	int ret = 0;
 	message_t msg;
 	char fname[MAX_SYSTEM_STRING_SIZE*2];
-	ret = pthread_rwlock_wrlock(&lock);
-	if(ret)	{
-		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d", ret);
-		return ret;
-	}
 	if( misc_get_bit(dirty, CONFIG_AUDIO_PROFILE) ) {
 		memset(fname,0,sizeof(fname));
 		sprintf(fname,"%s%s",_config_.qcy_path, CONFIG_AUDIO_PROFILE_PATH);
@@ -85,12 +82,8 @@ static int audio_config_save(void)
 		msg.message = MSG_MANAGER_TIMER_REMOVE;
 		msg.arg_in.handler = audio_config_save;
 		/****************************/
-		manager_message(&msg);
+		manager_common_send_message(SERVER_MANAGER, &msg);
 	}
-	ret = pthread_rwlock_unlock(&lock);
-	if (ret)
-		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d", ret);
-
 	return ret;
 }
 
@@ -98,12 +91,6 @@ int config_audio_read(audio_config_t *aconfig)
 {
 	int ret,ret1=0;
 	char fname[MAX_SYSTEM_STRING_SIZE*2];
-	pthread_rwlock_init(&lock, NULL);
-	ret = pthread_rwlock_wrlock(&lock);
-	if(ret)	{
-		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d", ret);
-		return ret;
-	}
 	memset(fname,0,sizeof(fname));
 	sprintf(fname,"%s%s",_config_.qcy_path, CONFIG_AUDIO_PROFILE_PATH);
 	ret = read_config_file(&audio_config_profile_map, fname);
@@ -120,10 +107,6 @@ int config_audio_read(audio_config_t *aconfig)
 	else
 		misc_set_bit(&audio_config.status, CONFIG_AUDIO_CAPTURE,0);
 	ret1 |= ret;
-	ret = pthread_rwlock_unlock(&lock);
-	if (ret)
-		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d", ret);
-	ret1 |= ret;
 	memcpy(aconfig,&audio_config,sizeof(audio_config_t));
 	return ret1;
 }
@@ -131,11 +114,6 @@ int config_audio_read(audio_config_t *aconfig)
 int config_audio_set(int module, void *arg)
 {
 	int ret = 0;
-	ret = pthread_rwlock_wrlock(&lock);
-	if(ret)	{
-		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d", ret);
-		return ret;
-	}
 	if(dirty==0) {
 		message_t msg;
 		message_arg_t arg;
@@ -148,7 +126,7 @@ int config_audio_set(int module, void *arg)
 		msg.arg_in.duck = 0;
 		msg.arg_in.handler = &audio_config_save;
 		/****************************/
-		manager_message(&msg);
+		manager_common_send_message(SERVER_MANAGER, &msg);
 	}
 	misc_set_bit(&dirty, module, 1);
 	if( module == CONFIG_AUDIO_PROFILE) {
@@ -157,27 +135,5 @@ int config_audio_set(int module, void *arg)
 	else if ( module == CONFIG_AUDIO_CAPTURE ) {
 		memcpy( (struct rts_audio_attr*)(&audio_config.capture), arg, sizeof(struct rts_audio_attr));
 	}
-	ret = pthread_rwlock_unlock(&lock);
-	if (ret)
-		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d", ret);
 	return ret;
 }
-
-int config_audio_get_config_status(int module)
-{
-	int st,ret=0;
-	ret = pthread_rwlock_wrlock(&lock);
-	if(ret)	{
-		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d", ret);
-		return ret;
-	}
-	if(module==-1)
-		st = audio_config.status;
-	else
-		st = misc_get_bit(audio_config.status, module);
-	ret = pthread_rwlock_unlock(&lock);
-	if (ret)
-		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d", ret);
-	return st;
-}
-

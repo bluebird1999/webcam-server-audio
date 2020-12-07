@@ -15,25 +15,21 @@
 /*
  * define
  */
-#define	RUN_MODE_SAVE			0
-#define RUN_MODE_SEND_MISS		1
-#define	RUN_MODE_SEND_MICLOUD	2
-#define	RUN_MODE_MOTION_DETECT	3
+#define	THREAD_AUDIO			0
+
+#define	RUN_MODE_SAVE		0
+#define	RUN_MODE_MICLOUD	4
+#define	RUN_MODE_MOTION		8
+#define RUN_MODE_MISS		16
 
 #define		AUDIO_INIT_CONDITION_NUM				2
 #define		AUDIO_INIT_CONDITION_CONFIG				0
 #define		AUDIO_INIT_CONDITION_REALTEK			1
 
+#define		AUDIO_EXIT_CONDITION			( (1 << SERVER_MISS) | (1 << SERVER_RECORDER) )
 /*
  * structure
  */
-typedef struct audio_stream_t {
-	//channel
-	int capture;
-	int encoder;
-	//data
-	int	frame;
-} audio_stream_t;
 
 /*
  * function

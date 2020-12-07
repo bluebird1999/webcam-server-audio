@@ -27,6 +27,9 @@
  */
 typedef struct audio_profile_t {
 	int							enable;
+	int							aec_enable;
+	int							ns_enable;
+	int							ns_level;
 } audio_profile_t;
 
 typedef struct audio_config_t {
@@ -40,6 +43,5 @@ typedef struct audio_config_t {
  */
 int config_audio_read(audio_config_t *aconfig);
 int config_audio_set(int module, void *arg);
-int config_audio_get_config_status(int module);
 
 #endif /* SERVER_AUDIO_CONFIG_H_ */
