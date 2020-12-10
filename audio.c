@@ -44,6 +44,7 @@ static  pthread_rwlock_t	ilock = PTHREAD_MUTEX_INITIALIZER;
 static	pthread_rwlock_t	alock = PTHREAD_RWLOCK_INITIALIZER;
 static	pthread_mutex_t		mutex = PTHREAD_MUTEX_INITIALIZER;
 static	pthread_cond_t		cond = PTHREAD_COND_INITIALIZER;
+static 	miss_session_t		*session[MAX_SESSION_NUMBER];
 
 //function
 //common
@@ -147,6 +148,10 @@ static int *audio_main_func(void* arg)
     			continue;
     		}
     		memcpy(packet->data, buffer->vm_addr, buffer->bytesused);
+    		if( (stream.realtek_stamp == 0) && (stream.unix_stamp == 0) ) {
+    			stream.realtek_stamp = buffer->timestamp;
+    			stream.unix_stamp = time_get_now_stamp();
+    		}
     		write_audio_info( buffer, &packet->info);
     		rts_av_put_buffer(buffer);
     		for(i=0;i<MAX_SESSION_NUMBER;i++) {
@@ -319,6 +324,9 @@ static int stream_stop(void)
 		ret = rts_av_disable_chn(stream.atoe_resample_ch);
 	if(stream.encoder!=-1)
 		ret = rts_av_disable_chn(stream.encoder);
+	stream.frame = 0;
+	stream.realtek_stamp = 0;
+	stream.unix_stamp = 0;
 	return ret;
 }
 
@@ -382,7 +390,8 @@ static void write_audio_info(struct rts_av_buffer *data, av_data_info_t	*info)
 {
 	info->flag = data->flags;
 	info->frame_index = data->frame_idx;
-	info->timestamp = data->timestamp / 1000;	// ms = us/1000
+//	info->timestamp = data->timestamp / 1000;	// ms = us/1000
+	info->timestamp = ( ( data->timestamp - stream.realtek_stamp ) / 1000) + stream.unix_stamp * 1000;
 	info->flag = FLAG_AUDIO_SAMPLE_8K << 3 | FLAG_AUDIO_DATABITS_16 << 7 | FLAG_AUDIO_CHANNEL_MONO << 9 |  FLAG_RESOLUTION_AUDIO_DEFAULT << 17;
 	info->size = data->bytesused;
 }
@@ -394,6 +403,7 @@ static int write_audio_buffer(av_packet_t *data, int id, int target, int channel
     /********message body********/
 	msg_init(&msg);
 	msg.arg_in.wolf = channel;
+	msg.arg_in.handler = session[channel];
 	msg.sender = msg.receiver = SERVER_AUDIO;
 	msg.message = id;
 	msg.arg = data;
@@ -406,6 +416,18 @@ static int write_audio_buffer(av_packet_t *data, int id, int target, int channel
 		ret = server_recorder_audio_message(&msg);
 	return ret;
 	/****************************/
+}
+
+static int audio_add_session(miss_session_t *ses, int sid)
+{
+	session[sid] = ses;
+	return 0;
+}
+
+static int audio_remove_session(miss_session_t *ses, int sid)
+{
+	session[sid] = NULL;
+	return 0;
 }
 
 static void server_thread_termination(void)
@@ -484,17 +506,11 @@ static int server_message_proc(void)
 	msg_deep_copy(&info.task.msg, &msg);
 	switch(msg.message) {
 		case MSG_AUDIO_START:
-			if( msg.sender == SERVER_MISS) misc_set_bit(&info.status2, (RUN_MODE_MISS + msg.arg_in.wolf), 1);
-			if( msg.sender == SERVER_MICLOUD) misc_set_bit(&info.status2, RUN_MODE_MICLOUD, 1);
-			if( msg.sender == SERVER_RECORDER) misc_set_bit(&info.status2, (RUN_MODE_SAVE + msg.arg_in.wolf), 1);
 			info.task.func = task_start;
 			info.task.start = info.status;
 			info.msg_lock = 1;
 			break;
 		case MSG_AUDIO_STOP:
-			if( msg.sender == SERVER_MISS) misc_set_bit(&info.status2, (RUN_MODE_MISS + msg.arg_in.wolf), 0);
-			if( msg.sender == SERVER_MICLOUD) misc_set_bit(&info.status2, RUN_MODE_MICLOUD, 0);
-			if( msg.sender == SERVER_RECORDER) misc_set_bit(&info.status2, (RUN_MODE_SAVE + msg.arg_in.wolf), 0);
 			info.task.func = task_stop;
 			info.task.start = info.status;
 			info.msg_lock = 1;
@@ -639,6 +655,14 @@ static void task_start(void)
 	}
 	return;
 exit:
+	if( msg.result == 0 ) {
+		if( info.task.msg.sender == SERVER_MISS ) {
+			audio_add_session(info.task.msg.arg_in.handler, info.task.msg.arg_in.wolf);
+		}
+		if( info.task.msg.sender == SERVER_MISS) misc_set_bit(&info.status2, (RUN_MODE_MISS + info.task.msg.arg_in.wolf), 1);
+		if( info.task.msg.sender == SERVER_MICLOUD) misc_set_bit(&info.status2, RUN_MODE_MICLOUD, 1);
+		if( info.task.msg.sender == SERVER_RECORDER) misc_set_bit(&info.status2, (RUN_MODE_SAVE + info.task.msg.arg_in.wolf), 1);
+	}
 	manager_common_send_message(info.task.msg.receiver, &msg);
 	msg_free(&info.task.msg);
 	info.task.func = &task_default;
@@ -695,6 +719,14 @@ static void task_stop(void)
 	}
 	return;
 exit:
+	if( msg.result == 0 ) {
+		if( info.task.msg.sender == SERVER_MISS ) {
+			audio_remove_session(info.task.msg.arg_in.handler, info.task.msg.arg_in.wolf);
+		}
+		if( info.task.msg.sender == SERVER_MISS) misc_set_bit(&info.status2, (RUN_MODE_MISS + info.task.msg.arg_in.wolf), 0);
+		if( info.task.msg.sender == SERVER_MICLOUD) misc_set_bit(&info.status2, RUN_MODE_MICLOUD, 0);
+		if( info.task.msg.sender == SERVER_RECORDER) misc_set_bit(&info.status2, (RUN_MODE_SAVE + info.task.msg.arg_in.wolf), 0);
+	}
 	manager_common_send_message(info.task.msg.receiver, &msg);
 	msg_free(&info.task.msg);
 	info.task.func = &task_default;
