@@ -511,6 +511,10 @@ static int server_message_proc(void)
 			info.msg_lock = 1;
 			break;
 		case MSG_AUDIO_STOP:
+			info.task.msg.arg_in.cat = info.status2;
+			if( msg.sender == SERVER_MISS) misc_set_bit(&info.task.msg.arg_in.cat, (RUN_MODE_MISS + msg.arg_in.wolf), 0);
+			if( msg.sender == SERVER_MICLOUD) misc_set_bit(&info.task.msg.arg_in.cat, RUN_MODE_MICLOUD, 0);
+			if( msg.sender == SERVER_RECORDER) misc_set_bit(&info.task.msg.arg_in.cat, (RUN_MODE_SAVE + msg.arg_in.wolf), 0);
 			info.task.func = task_stop;
 			info.task.start = info.status;
 			info.msg_lock = 1;
@@ -690,7 +694,7 @@ static void task_stop(void)
 			goto exit;
 			break;
 		case STATUS_RUN:
-			if( info.status2 > 0 ) {
+			if( info.task.msg.arg_in.cat > 0 ) {
 				/**************************/
 				msg_init(&msg);
 				memcpy(&(msg.arg_pass), &(info.task.msg.arg_pass),sizeof(message_arg_t));
