@@ -431,31 +431,6 @@ static int audio_remove_session(miss_session_t *ses, int sid)
 	return 0;
 }
 
-static int audio_init_routine(void)
-{
-	message_t msg;
-	if( !misc_get_bit( info.init_status, AUDIO_INIT_CONDITION_REALTEK ) ) {
-		/********message body********/
-		msg_init(&msg);
-		msg.message = MSG_REALTEK_PROPERTY_GET;
-		msg.sender = msg.receiver = SERVER_AUDIO;
-		msg.arg_in.cat = REALTEK_PROPERTY_AV_STATUS;
-		manager_common_send_message(SERVER_REALTEK, &msg);
-		/****************************/
-	}
-	if( misc_full_bit( info.init_status, AUDIO_INIT_CONDITION_NUM ) ) {
-		info.status = STATUS_WAIT;
-		/********message body********/
-		msg_init(&msg);
-		msg.message = MSG_MANAGER_TIMER_REMOVE;
-		msg.sender = msg.receiver = SERVER_AUDIO;
-		msg.arg_in.handler = audio_init_routine;
-		manager_common_send_message(SERVER_MANAGER, &msg);
-		/****************************/
-	}
-	return 0;
-}
-
 static void server_thread_termination(void)
 {
 	message_t msg;
@@ -584,21 +559,24 @@ static int server_none(void)
 		ret = config_audio_read(&config);
 		if( !ret && misc_full_bit( config.status, CONFIG_AUDIO_MODULE_NUM) ) {
 			misc_set_bit(&info.init_status, AUDIO_INIT_CONDITION_CONFIG, 1);
-		    /********message body********/
-			msg_init(&msg);
-			msg.message = MSG_MANAGER_TIMER_ADD;
-			msg.sender = SERVER_AUDIO;
-			msg.arg_in.cat = 100;
-			msg.arg_in.dog = 0;
-			msg.arg_in.duck = 0;
-			msg.arg_in.handler = &audio_init_routine;
-			manager_common_send_message(SERVER_MANAGER, &msg);
-			/****************************/
 		}
 		else {
 			info.status = STATUS_ERROR;
 			return -1;
 		}
+	}
+	if( !misc_get_bit( info.init_status, AUDIO_INIT_CONDITION_REALTEK ) ) {
+		/********message body********/
+		msg_init(&msg);
+		msg.message = MSG_REALTEK_PROPERTY_GET;
+		msg.sender = msg.receiver = SERVER_AUDIO;
+		msg.arg_in.cat = REALTEK_PROPERTY_AV_STATUS;
+		manager_common_send_message(SERVER_REALTEK, &msg);
+		/****************************/
+		usleep(MESSAGE_RESENT_SLEEP);
+	}
+	if( misc_full_bit( info.init_status, AUDIO_INIT_CONDITION_NUM ) ) {
+		info.status = STATUS_WAIT;
 	}
 	return ret;
 }
