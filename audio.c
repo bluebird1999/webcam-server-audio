@@ -120,6 +120,7 @@ static int *audio_main_func(void* arg)
     memcpy( &ctrl,(audio_stream_t*)arg, sizeof(audio_stream_t));
     av_buffer_init(&abuffer, &alock);
     server_set_status(STATUS_TYPE_THREAD_START, THREAD_AUDIO, 1 );
+    manager_common_send_dummy(SERVER_AUDIO);
     while( 1 ) {
     	st = info.status;
     	if( info.exit ||
@@ -430,6 +431,31 @@ static int audio_remove_session(miss_session_t *ses, int sid)
 	return 0;
 }
 
+static int audio_init_routine(void)
+{
+	message_t msg;
+	if( !misc_get_bit( info.init_status, AUDIO_INIT_CONDITION_REALTEK ) ) {
+		/********message body********/
+		msg_init(&msg);
+		msg.message = MSG_REALTEK_PROPERTY_GET;
+		msg.sender = msg.receiver = SERVER_AUDIO;
+		msg.arg_in.cat = REALTEK_PROPERTY_AV_STATUS;
+		manager_common_send_message(SERVER_REALTEK, &msg);
+		/****************************/
+	}
+	if( misc_full_bit( info.init_status, AUDIO_INIT_CONDITION_NUM ) ) {
+		info.status = STATUS_WAIT;
+		/********message body********/
+		msg_init(&msg);
+		msg.message = MSG_MANAGER_TIMER_REMOVE;
+		msg.sender = msg.receiver = SERVER_AUDIO;
+		msg.arg_in.handler = audio_init_routine;
+		manager_common_send_message(SERVER_MANAGER, &msg);
+		/****************************/
+	}
+	return 0;
+}
+
 static void server_thread_termination(void)
 {
 	message_t msg;
@@ -558,23 +584,22 @@ static int server_none(void)
 		ret = config_audio_read(&config);
 		if( !ret && misc_full_bit( config.status, CONFIG_AUDIO_MODULE_NUM) ) {
 			misc_set_bit(&info.init_status, AUDIO_INIT_CONDITION_CONFIG, 1);
+		    /********message body********/
+			msg_init(&msg);
+			msg.message = MSG_MANAGER_TIMER_ADD;
+			msg.sender = SERVER_AUDIO;
+			msg.arg_in.cat = 100;
+			msg.arg_in.dog = 0;
+			msg.arg_in.duck = 0;
+			msg.arg_in.handler = &audio_init_routine;
+			manager_common_send_message(SERVER_MANAGER, &msg);
+			/****************************/
 		}
 		else {
 			info.status = STATUS_ERROR;
 			return -1;
 		}
 	}
-	if( !misc_get_bit( info.init_status, AUDIO_INIT_CONDITION_REALTEK ) ) {
-	    /********message body********/
-		msg_init(&msg);
-		msg.message = MSG_REALTEK_PROPERTY_GET;
-		msg.sender = msg.receiver = SERVER_AUDIO;
-		msg.arg_in.cat = REALTEK_PROPERTY_AV_STATUS;
-		manager_common_send_message(SERVER_REALTEK,    &msg);
-		/****************************/
-	}
-	if( misc_full_bit( info.init_status, AUDIO_INIT_CONDITION_NUM ) )
-		info.status = STATUS_WAIT;
 	return ret;
 }
 
@@ -617,6 +642,13 @@ static int server_stop(void)
 static void task_start(void)
 {
 	message_t msg;
+	/**************************/
+	msg_init(&msg);
+	memcpy(&(msg.arg_pass), &(info.task.msg.arg_pass),sizeof(message_arg_t));
+	msg.message = info.task.msg.message | 0x1000;
+	msg.sender = msg.receiver = SERVER_AUDIO;
+	msg.result = 0;
+	/***************************/
 	switch(info.status){
 		case STATUS_NONE:
 			server_none();
@@ -634,23 +666,11 @@ static void task_start(void)
 			server_start();
 			break;
 		case STATUS_RUN:
-			/**************************/
-			msg_init(&msg);
-			memcpy(&(msg.arg_pass), &(info.task.msg.arg_pass),sizeof(message_arg_t));
-			msg.message = info.task.msg.message | 0x1000;
-			msg.sender = msg.receiver = SERVER_AUDIO;
-			msg.result = 0;
-			/***************************/
-			goto exit;
+			if( misc_get_bit( info.thread_start, THREAD_AUDIO ) )
+				goto exit;
 			break;
 		case STATUS_ERROR:
-			/**************************/
-			msg_init(&msg);
-			memcpy(&(msg.arg_pass), &(info.task.msg.arg_pass),sizeof(message_arg_t));
-			msg.message = info.task.msg.message | 0x1000;
-			msg.sender = msg.receiver = SERVER_AUDIO;
 			msg.result = -1;
-			/***************************/
 			goto exit;
 			break;
 		default:
@@ -679,29 +699,24 @@ exit:
 static void task_stop(void)
 {
 	message_t msg;
+	/**************************/
+	msg_init(&msg);
+	memcpy(&(msg.arg_pass), &(info.task.msg.arg_pass),sizeof(message_arg_t));
+	msg.message = info.task.msg.message | 0x1000;
+	msg.sender = msg.receiver = SERVER_AUDIO;
+	msg.result = 0;
 	switch(info.status){
 		case STATUS_NONE:
 		case STATUS_WAIT:
 		case STATUS_SETUP:
-		case STATUS_IDLE:
-			/**************************/
-			msg_init(&msg);
-			memcpy(&(msg.arg_pass), &(info.task.msg.arg_pass),sizeof(message_arg_t));
-			msg.message = info.task.msg.message | 0x1000;
-			msg.sender = msg.receiver = SERVER_AUDIO;
-			msg.result = 0;
-			/***************************/
 			goto exit;
+			break;
+		case STATUS_IDLE:
+			if( info.thread_start == 0 )
+				goto exit;
 			break;
 		case STATUS_RUN:
 			if( info.task.msg.arg_in.cat > 0 ) {
-				/**************************/
-				msg_init(&msg);
-				memcpy(&(msg.arg_pass), &(info.task.msg.arg_pass),sizeof(message_arg_t));
-				msg.message = info.task.msg.message | 0x1000;
-				msg.sender = msg.receiver = SERVER_AUDIO;
-				msg.result = 0;
-				/***************************/
 				goto exit;
 				break;
 			}
@@ -709,11 +724,6 @@ static void task_stop(void)
 				server_stop();
 			break;
 		case STATUS_ERROR:
-			/**************************/
-			msg_init(&msg);
-			memcpy(&(msg.arg_pass), &(info.task.msg.arg_pass),sizeof(message_arg_t));
-			msg.message = info.task.msg.message | 0x1000;
-			msg.sender = msg.receiver = SERVER_AUDIO;
 			msg.result = -1;
 			goto exit;
 			break;
