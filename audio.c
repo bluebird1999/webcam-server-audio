@@ -142,6 +142,11 @@ static int *audio_main_func(void* arg)
     		continue;
     	if ( buffer ) {
         	packet = av_buffer_get_empty(&abuffer, &qos.buffer_overrun, &qos.buffer_success);
+        	if( buffer->bytesused > 100*1024 ) {
+    			log_qcy(DEBUG_WARNING, "realtek audio frame size=%d!!!!!!", buffer->bytesused);
+    			rts_av_put_buffer(buffer);
+    			continue;
+        	}
     		packet->data = malloc( buffer->bytesused );
     		if( packet->data == NULL) {
     			log_qcy(DEBUG_WARNING, "allocate memory failed in audio buffer, size=%d", buffer->bytesused);
@@ -736,9 +741,13 @@ static void task_exit(void)
 {
 	switch( info.status ){
 		case EXIT_INIT:
-			info.error = AUDIO_EXIT_CONDITION;
+			log_qcy(DEBUG_INFO,"AUDIO: switch to exit task!");
 			if( info.task.msg.sender == SERVER_MANAGER) {
+				info.error = AUDIO_EXIT_CONDITION;
 				info.error &= (info.task.msg.arg_in.cat);
+			}
+			else {
+				info.error = 0;
 			}
 			info.status = EXIT_SERVER;
 			break;
