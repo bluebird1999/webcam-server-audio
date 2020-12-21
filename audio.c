@@ -25,7 +25,7 @@
 #include "../../manager/global_interface.h"
 #include "../../manager/manager_interface.h"
 #include "../../server/recorder/recorder_interface.h"
-//#include "../../server/micloud/micloud_interface.h"
+#include "../../server/micloud/micloud_interface.h"
 //server header
 #include "audio.h"
 #include "config.h"
@@ -199,13 +199,12 @@ static int *audio_main_func(void* arg)
 					}
 				}
 			}
-/*			if( misc_get_bit(info.status2, RUN_MODE_MICLOUD) ) {
+			if( misc_get_bit(info.status2, RUN_MODE_MICLOUD) ) {
 				if( write_audio_buffer(packet, MSG_MICLOUD_AUDIO_DATA, SERVER_MICLOUD,0) != 0 )
 					log_qcy(DEBUG_WARNING, "Micloud ring buffer push failed!");
 				else
 					av_packet_add(packet);
 			}
-*/
     	}
     }
     //release
@@ -416,8 +415,8 @@ static int write_audio_buffer(av_packet_t *data, int id, int target, int channel
 	msg.arg_size = 0;
 	if( target == SERVER_MISS )
 		ret = server_miss_audio_message(&msg);
-//	else if( target == SERVER_MICLOUD )
-//		ret = server_micloud_audio_message(&msg);
+	else if( target == SERVER_MICLOUD )
+		ret = server_micloud_audio_message(&msg);
 	else if( target == SERVER_RECORDER )
 		ret = server_recorder_audio_message(&msg);
 	return ret;
