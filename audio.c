@@ -113,6 +113,9 @@ static int *audio_main_func(void* arg)
 	struct rts_av_buffer *buffer = NULL;
     signal(SIGINT, server_thread_termination);
     signal(SIGTERM, server_thread_termination);
+    signal(SIGSEGV, signal_handler);
+    signal(SIGFPE,  signal_handler);
+    signal(SIGBUS,  signal_handler);
     misc_set_thread_name("server_audio_main");
     pthread_detach(pthread_self());
     //init
@@ -138,12 +141,20 @@ static int *audio_main_func(void* arg)
     	if(ret)
     		continue;
     	ret = rts_av_recv(stream.encoder, &buffer);
-    	if(ret)
+    	if(ret) {
+    		if( buffer )
+    			rts_av_put_buffer(buffer);
     		continue;
+    	}
     	if ( buffer ) {
         	packet = av_buffer_get_empty(&abuffer, &qos.buffer_overrun, &qos.buffer_success);
         	if( buffer->bytesused > 100*1024 ) {
     			log_qcy(DEBUG_WARNING, "realtek audio frame size=%d!!!!!!", buffer->bytesused);
+    			rts_av_put_buffer(buffer);
+    			continue;
+        	}
+        	if( misc_mips_address_check((unsigned int)buffer->vm_addr) ) {
+    			log_qcy(DEBUG_WARNING, "realtek audio memory address anomity =%p!!!!!!", buffer->vm_addr);
     			rts_av_put_buffer(buffer);
     			continue;
         	}
@@ -205,6 +216,7 @@ static int *audio_main_func(void* arg)
 				else
 					av_packet_add(packet);
 			}
+			av_packet_check(packet);
     	}
     }
     //release
@@ -412,7 +424,8 @@ static int write_audio_buffer(av_packet_t *data, int id, int target, int channel
 	msg.sender = msg.receiver = SERVER_AUDIO;
 	msg.message = id;
 	msg.arg = data;
-	msg.arg_size = 0;
+	msg.arg_size = 0;	//make sure this is 0 for non-deep-copy
+	msg.extra_size = 0;
 	if( target == SERVER_MISS )
 		ret = server_miss_audio_message(&msg);
 	else if( target == SERVER_MICLOUD )
@@ -821,6 +834,9 @@ static void *server_func(void)
 {
     signal(SIGINT, server_thread_termination);
     signal(SIGTERM, server_thread_termination);
+    signal(SIGSEGV, signal_handler);
+    signal(SIGFPE,  signal_handler);
+    signal(SIGBUS,  signal_handler);
 	pthread_detach(pthread_self());
 	misc_set_thread_name("server_audio");
 	msg_buffer_init2(&message, MSG_BUFFER_OVERFLOW_NO, &mutex);
