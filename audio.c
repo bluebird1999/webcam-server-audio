@@ -26,6 +26,7 @@
 #include "../../manager/manager_interface.h"
 #include "../../server/recorder/recorder_interface.h"
 #include "../../server/micloud/micloud_interface.h"
+#include "../../server/speaker/speaker_interface.h"
 //server header
 #include "audio.h"
 #include "config.h"
@@ -37,7 +38,7 @@
 //variable
 static 	message_buffer_t	message;
 static 	server_info_t 		info;
-static	audio_stream_t		stream={-1,-1,-1,-1};
+static	audio_stream_t		stream={-1,-1,-1,-1,-1};
 static	audio_config_t		config;
 static 	av_buffer_t			abuffer;
 static  pthread_rwlock_t	ilock = PTHREAD_RWLOCK_INITIALIZER;
@@ -113,9 +114,6 @@ static int *audio_main_func(void* arg)
 	struct rts_av_buffer *buffer = NULL;
     signal(SIGINT, server_thread_termination);
     signal(SIGTERM, server_thread_termination);
-    signal(SIGSEGV, signal_handler);
-    signal(SIGFPE,  signal_handler);
-    signal(SIGBUS,  signal_handler);
     misc_set_thread_name("server_audio_main");
     pthread_detach(pthread_self());
     //init
@@ -147,30 +145,40 @@ static int *audio_main_func(void* arg)
     		continue;
     	}
     	if ( buffer ) {
-        	packet = av_buffer_get_empty(&abuffer, &qos.buffer_overrun, &qos.buffer_success);
         	if( buffer->bytesused > 100*1024 ) {
-    			log_qcy(DEBUG_WARNING, "realtek audio frame size=%d!!!!!!", buffer->bytesused);
-    			rts_av_put_buffer(buffer);
-    			continue;
+    			log_qcy(DEBUG_WARNING, "++++++++++++++++++++realtek audio frame size=%d!!!!!!", buffer->bytesused);
+//    			rts_av_put_buffer(buffer);
+ //   			continue;
         	}
         	if( misc_mips_address_check((unsigned int)buffer->vm_addr) ) {
     			log_qcy(DEBUG_WARNING, "realtek audio memory address anomity =%p!!!!!!", buffer->vm_addr);
     			rts_av_put_buffer(buffer);
     			continue;
         	}
-    		packet->data = malloc( buffer->bytesused );
-    		if( packet->data == NULL) {
-    			log_qcy(DEBUG_WARNING, "allocate memory failed in audio buffer, size=%d", buffer->bytesused);
-    			rts_av_put_buffer(buffer);
-    			continue;
+    		if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+				packet = av_buffer_get_empty(&abuffer, &qos.buffer_overrun, &qos.buffer_success);
+				if( packet == NULL ) {
+					log_qcy(DEBUG_INFO, "-------------AUDIO buffer overrun!!!---");
+					rts_av_put_buffer(buffer);
+					continue;
+				}
+				packet->data = malloc( buffer->bytesused );
+				if( packet->data == NULL) {
+					log_qcy(DEBUG_WARNING, "allocate memory failed in audio buffer, size=%d", buffer->bytesused);
+					rts_av_put_buffer(buffer);
+					continue;
+				}
+				memcpy(packet->data, buffer->vm_addr, buffer->bytesused);
     		}
-    		memcpy(packet->data, buffer->vm_addr, buffer->bytesused);
+    		else {
+        		packet = &(abuffer.packet[0]);
+        		packet->data = buffer->vm_addr;
+    		}
     		if( (stream.realtek_stamp == 0) && (stream.unix_stamp == 0) ) {
     			stream.realtek_stamp = buffer->timestamp;
     			stream.unix_stamp = time_get_now_stamp();
     		}
     		write_audio_info( buffer, &packet->info);
-    		rts_av_put_buffer(buffer);
     		for(i=0;i<MAX_SESSION_NUMBER;i++) {
     			if( misc_get_bit(info.status2, RUN_MODE_MISS+i) ) {
     				ret = write_audio_buffer(packet, MSG_MISS_AUDIO_DATA, SERVER_MISS, i);
@@ -187,9 +195,14 @@ static int *audio_main_func(void* arg)
     						log_qcy(DEBUG_WARNING, "----shut down audio miss stream due to long overrun!------");
     					}
     				}
+					else if( ret == MISS_LOCAL_ERR_MSG_BUFF_FULL ) {
+
+					}
     				else if( ret == 0) {
-    					av_packet_add(packet);
     					qos.failed_send[RUN_MODE_MISS+i] = 0;
+						if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+							av_packet_add(packet);
+						}
     				}
     			}
     		}
@@ -205,18 +218,28 @@ static int *audio_main_func(void* arg)
 						}
 					}
 					else {
-						av_packet_add(packet);
+						if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+							av_packet_add(packet);
+						}
 						qos.failed_send[RUN_MODE_SAVE+i] = 0;
 					}
 				}
 			}
 			if( misc_get_bit(info.status2, RUN_MODE_MICLOUD) ) {
-				if( write_audio_buffer(packet, MSG_MICLOUD_AUDIO_DATA, SERVER_MICLOUD,0) != 0 )
+				if( write_audio_buffer(packet, MSG_MICLOUD_AUDIO_DATA, SERVER_MICLOUD,0) != 0 ) {
 					log_qcy(DEBUG_WARNING, "Micloud ring buffer push failed!");
-				else
-					av_packet_add(packet);
+				}
+				else {
+					if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+						av_packet_add(packet);
+					}
+				}
 			}
-			av_packet_check(packet);
+    		if( _config_.memory_mode == MEMORY_MODE_SHARED) {
+    			av_packet_check(packet);
+    		}
+			packet = NULL;
+   			rts_av_put_buffer(buffer);
     	}
     }
     //release
@@ -234,6 +257,7 @@ static int stream_init(void)
 	stream.encoder = -1;
 	stream.atoe_resample_ch = -1;
 	stream.capture_aec_ch = -1;
+	stream.ptoc_resample_ch = -1;
 	stream.frame = 0;
 }
 
@@ -256,6 +280,10 @@ static int stream_destroy(void)
 		RTS_SAFE_CLOSE(stream.capture_aec_ch, rts_av_destroy_chn);
 		stream.capture_aec_ch = -1;
 	}
+	if (stream.ptoc_resample_ch >= 0) {
+		RTS_SAFE_CLOSE(stream.ptoc_resample_ch, rts_av_destroy_chn);
+		stream.ptoc_resample_ch = -1;
+	}
 	return ret;
 }
 
@@ -264,6 +292,17 @@ static int stream_start(void)
 	int ret=0;
 	struct rts_aec_control *aec_ctrl;
 	pthread_t	id;
+	if( stream.ptoc_resample_ch != -1 ) {
+		ret = rts_av_enable_chn(stream.ptoc_resample_ch);
+		if (ret) {
+			log_qcy(DEBUG_SERIOUS, "enable ptoc_resample_ch fail, ret = %d", ret);
+			return -1;
+		}
+	}
+	else {
+		return -1;
+	}
+	log_qcy(DEBUG_INFO, "enable ptoc_resample_ch chnno:%d success", stream.ptoc_resample_ch);
 	if( stream.capture != -1 ) {
 		ret = rts_av_enable_chn(stream.capture);
 		if (ret) {
@@ -333,6 +372,8 @@ static int stream_stop(void)
 	int ret=0;
 	if(stream.encoder!=-1)
 		ret = rts_av_stop_recv(stream.encoder);
+	if(stream.ptoc_resample_ch!=-1)
+		ret = rts_av_disable_chn(stream.ptoc_resample_ch);
 	if(stream.capture!=-1)
 		ret = rts_av_disable_chn(stream.capture);
 	if(stream.capture_aec_ch!=-1)
@@ -355,6 +396,12 @@ static int audio_init(void)
 	int codec_channels = 2;
 	struct rts_av_profile profile;
 	stream_init();
+	stream.ptoc_resample_ch = rts_av_create_audio_resample_chn(config.capture.rate, config.capture.format, config.capture.channels);
+	if (stream.ptoc_resample_ch < 0) {
+		log_qcy(DEBUG_SERIOUS, "fail to create audio ptoc_resample_ch chn, ret = %d", stream.ptoc_resample_ch);
+		return -1;
+	}
+	log_qcy(DEBUG_INFO, "ptoc_resample_ch chnno:%d", stream.ptoc_resample_ch);
 	stream.capture = rts_av_create_audio_capture_chn(&config.capture);
 	if (stream.capture < 0) {
 		log_qcy(DEBUG_SERIOUS, "fail to create audio capture chn, ret = %d", stream.capture);
@@ -385,6 +432,17 @@ static int audio_init(void)
 		return -1;
 	}
 	log_qcy(DEBUG_INFO, "atoe_resample_ch chnno:%d", stream.atoe_resample_ch);
+	ret = rts_av_bind(stream.playback_ch, stream.ptoc_resample_ch);
+	if (ret) {
+	   	log_qcy(DEBUG_SERIOUS, "fail to bind playback_ch and ptoc_resample_ch, ret = %d", ret);
+	   	return -1;
+	}
+	ret = rts_av_bind(stream.ptoc_resample_ch, stream.capture_aec_ch);
+	if (ret) {
+	   	log_qcy(DEBUG_SERIOUS, "fail to bind ptoc_resample_ch and capture_aec_ch, ret = %d", ret);
+	   	return -1;
+	}
+	log_qcy(DEBUG_INFO, "bind ptoc_resample_ch chnno:%d, success", stream.ptoc_resample_ch);
 	ret = rts_av_bind(stream.capture, stream.capture_aec_ch);
 	if (ret) {
 	   	log_qcy(DEBUG_SERIOUS, "fail to bind capture_ch and capture_aec_ch, ret = %d", ret);
@@ -423,9 +481,17 @@ static int write_audio_buffer(av_packet_t *data, int id, int target, int channel
 	msg.arg_in.handler = session[channel];
 	msg.sender = msg.receiver = SERVER_AUDIO;
 	msg.message = id;
-	msg.arg = data;
-	msg.arg_size = 0;	//make sure this is 0 for non-deep-copy
-	msg.extra_size = 0;
+	if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+		msg.arg = data;
+		msg.arg_size = 0;	//make sure this is 0 for non-deep-copy
+		msg.extra_size = 0;
+	}
+	else {
+		msg.arg = data->data;
+		msg.arg_size = data->info.size;
+		msg.extra = &(data->info);
+		msg.extra_size = sizeof(data->info);
+	}
 	if( target == SERVER_MISS )
 		ret = server_miss_audio_message(&msg);
 	else if( target == SERVER_MICLOUD )
@@ -555,9 +621,14 @@ static int server_message_proc(void)
 			break;
 		case MSG_REALTEK_PROPERTY_NOTIFY:
 		case MSG_REALTEK_PROPERTY_GET_ACK:
+		case MSG_SPEAKER_PROPERTY_GET_ACK:
 			if( msg.arg_in.cat == REALTEK_PROPERTY_AV_STATUS ) {
 				if( msg.arg_in.dog == 1 )
 					misc_set_bit(&info.init_status, AUDIO_INIT_CONDITION_REALTEK, 1);
+			}
+			else if( msg.arg_pass.cat == SPEAKER_PLAYBACK_CHN_NUM ) {
+				stream.playback_ch = msg.arg_in.cat;
+				misc_set_bit(&info.init_status, AUDIO_INIT_CONDITION_SPEAKER, 1);
 			}
 			break;
 		case MSG_MANAGER_EXIT_ACK:
@@ -597,6 +668,16 @@ static int server_none(void)
 		msg.sender = msg.receiver = SERVER_AUDIO;
 		msg.arg_in.cat = REALTEK_PROPERTY_AV_STATUS;
 		manager_common_send_message(SERVER_REALTEK, &msg);
+		/****************************/
+		usleep(MESSAGE_RESENT_SLEEP);
+	}
+	if( !misc_get_bit( info.init_status, AUDIO_INIT_CONDITION_SPEAKER ) ) {
+		/********message body********/
+		msg_init(&msg);
+		msg.message = MSG_SPEAKER_PROPERTY_GET;
+		msg.sender = msg.receiver = SERVER_AUDIO;
+		msg.arg_pass.cat = SPEAKER_PLAYBACK_CHN_NUM;
+		manager_common_send_message(SERVER_SPEAKER, &msg);
 		/****************************/
 		usleep(MESSAGE_RESENT_SLEEP);
 	}
@@ -657,7 +738,7 @@ static void task_start(void)
 			server_none();
 			break;
 		case STATUS_WAIT:
-			info.status = STATUS_WAIT;
+			info.status = STATUS_SETUP;
 			break;
 		case STATUS_SETUP:
 			server_setup();
@@ -719,7 +800,8 @@ static void task_stop(void)
 				goto exit;
 			break;
 		case STATUS_RUN:
-			if( info.task.msg.arg_in.cat > 0 ) {
+			if( (info.task.msg.arg_in.cat > 0) ||
+					(!info.task.msg.arg_in.duck && (info.task.msg.sender == SERVER_RECORDER) ) ) {	//real stop == 0
 				goto exit;
 				break;
 			}
@@ -839,12 +921,9 @@ static void *server_func(void)
 {
     signal(SIGINT, server_thread_termination);
     signal(SIGTERM, server_thread_termination);
-    signal(SIGSEGV, signal_handler);
-    signal(SIGFPE,  signal_handler);
-    signal(SIGBUS,  signal_handler);
 	pthread_detach(pthread_self());
 	misc_set_thread_name("server_audio");
-	msg_buffer_init2(&message, MSG_BUFFER_OVERFLOW_NO, &mutex);
+	msg_buffer_init2(&message, _config_.msg_overrun, &mutex);
 	info.init = 1;
 	//default task
 	info.task.func = task_default;
