@@ -33,6 +33,10 @@ static config_map_t audio_config_profile_map[] = {
 		{"aec_enable",			&(audio_config.profile.aec_enable),		cfg_u32, 1,0,0,1,},
 		{"ns_enable",			&(audio_config.profile.ns_enable),		cfg_u32, 1,0,0,1,},
 		{"ns_level",			&(audio_config.profile.ns_level),		cfg_u32, 1,0,0,100,},
+		{"aec_scale",			&(audio_config.profile.aec_scale),		cfg_u32, 1,0,0,100,},
+		{"aec_thr",				&(audio_config.profile.aec_thr),		cfg_u32, 1,0,0,100,},
+		{"capture_volume",		&(audio_config.profile.capture_volume),	cfg_u32, 1,0,0,100,},
+		{"playback_volume",		&(audio_config.profile.playback_volume),cfg_u32, 1,0,0,100,},
     {NULL,},
 };
 
@@ -43,6 +47,15 @@ static config_map_t audio_config_caputure_map[] = {
 	{"channels",			&(audio_config.capture.channels),		cfg_u32, 1,0,0,10,},
     {NULL,},
 };
+
+static config_map_t audio_config_playback_map[] = {
+    {"device", 				&(audio_config.playback.dev_node), 		cfg_string, 'hw:0,1',0,0,64,},
+    {"format",				&(audio_config.playback.format),		cfg_u32, 16,0,0,100,},
+	{"rate",				&(audio_config.playback.rate),			cfg_u32, 8000,0,0,10000000,},
+	{"channels",			&(audio_config.playback.channels),		cfg_u32, 1,0,0,10,},
+    {NULL,},
+};
+
 //function
 static int audio_config_save(void);
 
@@ -77,6 +90,14 @@ static int audio_config_save(void)
 		if(!ret)
 			misc_set_bit(&dirty, CONFIG_AUDIO_CAPTURE, 0);
 	}
+	else if( misc_get_bit(dirty, CONFIG_AUDIO_PLAYBACK) )
+	{
+		memset(fname,0,sizeof(fname));
+		sprintf(fname,"%s%s",_config_.qcy_path, CONFIG_AUDIO_PLAYBACK_PATH);
+		ret = write_config_file(&audio_config_playback_map, fname);
+		if(!ret)
+			misc_set_bit(&dirty, CONFIG_AUDIO_PLAYBACK, 0);
+	}
 	if( !dirty ) {
 		/********message body********/
 		msg_init(&msg);
@@ -108,6 +129,14 @@ int config_audio_read(audio_config_t *aconfig)
 	else
 		misc_set_bit(&audio_config.status, CONFIG_AUDIO_CAPTURE,0);
 	ret1 |= ret;
+	memset(fname,0,sizeof(fname));
+	sprintf(fname,"%s%s",_config_.qcy_path, CONFIG_AUDIO_PLAYBACK_PATH);
+	ret = read_config_file(&audio_config_playback_map, fname);
+	if(!ret)
+		misc_set_bit(&audio_config.status, CONFIG_AUDIO_PLAYBACK,1);
+	else
+		misc_set_bit(&audio_config.status, CONFIG_AUDIO_PLAYBACK,0);
+	ret1 |= ret;
 	memcpy(aconfig,&audio_config,sizeof(audio_config_t));
 	return ret1;
 }
@@ -135,6 +164,9 @@ int config_audio_set(int module, void *arg)
 	}
 	else if ( module == CONFIG_AUDIO_CAPTURE ) {
 		memcpy( (struct rts_audio_attr*)(&audio_config.capture), arg, sizeof(struct rts_audio_attr));
+	}
+	else if ( module == CONFIG_AUDIO_PLAYBACK ) {
+		memcpy( (struct rts_audio_attr*)(&audio_config.playback), arg, sizeof(struct rts_audio_attr));
 	}
 	return ret;
 }

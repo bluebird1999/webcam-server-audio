@@ -26,11 +26,12 @@
 #include "../../manager/manager_interface.h"
 #include "../../server/recorder/recorder_interface.h"
 #include "../../server/micloud/micloud_interface.h"
-#include "../../server/speaker/speaker_interface.h"
+#include "../../server/device/device_interface.h"
 //server header
 #include "audio.h"
 #include "config.h"
 #include "audio_interface.h"
+#include "play_audio.h"
 
 /*
  * static
@@ -38,7 +39,7 @@
 //variable
 static 	message_buffer_t	message;
 static 	server_info_t 		info;
-static	audio_stream_t		stream={-1,-1,-1,-1,-1};
+static	audio_stream_t		stream={-1,-1,-1,-1,-1,-1,-1,-1};
 static	audio_config_t		config;
 static 	av_buffer_t			abuffer;
 static  pthread_rwlock_t	ilock = PTHREAD_RWLOCK_INITIALIZER;
@@ -93,6 +94,48 @@ static int server_set_status(int type, int st, int value)
 	return ret;
 }
 
+static void recycle_buffer(void *master, struct rts_av_buffer *buffer)
+{
+    RTS_SAFE_RELEASE(buffer, rts_av_delete_buffer);
+}
+
+static int audio_play(char *path)
+{
+    int ret;
+	message_t dev_send_msg;
+	device_iot_config_t device_iot_tmp;
+	msg_init(&dev_send_msg);
+	memset(&device_iot_tmp, 0 , sizeof(device_iot_config_t));
+	device_iot_tmp.amp_on_off = 1;
+	dev_send_msg.message = MSG_DEVICE_CTRL_DIRECT;
+	dev_send_msg.sender = dev_send_msg.receiver = SERVER_AUDIO;
+	dev_send_msg.arg = (void*)&device_iot_tmp;
+	dev_send_msg.arg_in.cat = DEVICE_CTRL_AMPLIFIER;
+	dev_send_msg.arg_size = sizeof(device_iot_config_t);
+	manager_common_send_message(SERVER_DEVICE, &dev_send_msg);
+
+    ret = play_audio(path);
+    if(ret)
+        log_qcy(DEBUG_WARNING, "play_audio failed");
+    return ret;
+}
+
+static int send_iot_ack(message_t *org_msg, message_t *msg, int id, int receiver, int result, void *arg, int size)
+{
+	int ret = 0;
+    /********message body********/
+//	msg_init(msg);
+	memcpy(&(msg->arg_pass), &(org_msg->arg_pass),sizeof(message_arg_t));
+	msg->message = id | 0x1000;
+	msg->sender = msg->receiver = SERVER_AUDIO;
+	msg->result = result;
+	msg->arg = arg;
+	msg->arg_size = size;
+	ret = manager_common_send_message(receiver, msg);
+	/***************************/
+	return ret;
+}
+
 static int audio_quit_send(int server, int channel)
 {
 	int ret = 0;
@@ -124,31 +167,31 @@ static int *audio_main_func(void* arg)
     manager_common_send_dummy(SERVER_AUDIO);
     while( 1 ) {
     	st = info.status;
-    	if( info.exit ||
-    			( (st != STATUS_START) &&
-				(st != STATUS_RUN) ) ) {
+    	if( info.exit )
     		break;
-    	}
     	if( misc_get_bit(info.thread_exit, THREAD_AUDIO) )
     		break;
-    	if( info.status == STATUS_START ) {
+    	if( info.status != STATUS_RUN )
     		continue;
-    	}
     	usleep(1000);
-    	ret = rts_av_poll(stream.encoder);
+    	ret = rts_av_poll(stream.encode_ch);
     	if(ret)
     		continue;
-    	ret = rts_av_recv(stream.encoder, &buffer);
+    	ret = rts_av_recv(stream.encode_ch, &buffer);
     	if(ret) {
     		if( buffer )
     			rts_av_put_buffer(buffer);
     		continue;
     	}
     	if ( buffer ) {
-        	if( buffer->bytesused > 100*1024 ) {
+        	if( (info.status2 == (1<<RUN_MODE_SPEAKER)) ) {
+        		rts_av_put_buffer(buffer);
+        		continue;
+        	}
+        	if( buffer->bytesused > MAX_AUDIO_FRAME_SIZE ) {
     			log_qcy(DEBUG_WARNING, "++++++++++++++++++++realtek audio frame size=%d!!!!!!", buffer->bytesused);
-//    			rts_av_put_buffer(buffer);
- //   			continue;
+    			rts_av_put_buffer(buffer);
+    			continue;
         	}
         	if( misc_mips_address_check((unsigned int)buffer->vm_addr) ) {
     			log_qcy(DEBUG_WARNING, "realtek audio memory address anomity =%p!!!!!!", buffer->vm_addr);
@@ -253,37 +296,31 @@ exit:
 
 static int stream_init(void)
 {
-	stream.capture = -1;
-	stream.encoder = -1;
+	stream.capture_ch = -1;
+	stream.encode_ch = -1;
+	stream.decode_ch = -1;
 	stream.atoe_resample_ch = -1;
 	stream.capture_aec_ch = -1;
 	stream.ptoc_resample_ch = -1;
+	stream.dtom_resample_ch = -1;
+	stream.mixer_ch = -1;
+	stream.playback_ch = -1;
 	stream.frame = 0;
 }
 
 static int stream_destroy(void)
 {
 	int ret = 0;
-	if (stream.capture >= 0) {
-		RTS_SAFE_CLOSE(stream.capture, rts_av_destroy_chn);
-		stream.capture = -1;
-	}
-	if (stream.encoder >= 0) {
-		RTS_SAFE_CLOSE(stream.encoder, rts_av_destroy_chn);
-		stream.encoder = -1;
-	}
-	if (stream.atoe_resample_ch >= 0) {
-		RTS_SAFE_CLOSE(stream.atoe_resample_ch, rts_av_destroy_chn);
-		stream.atoe_resample_ch = -1;
-	}
-	if (stream.capture_aec_ch >= 0) {
-		RTS_SAFE_CLOSE(stream.capture_aec_ch, rts_av_destroy_chn);
-		stream.capture_aec_ch = -1;
-	}
-	if (stream.ptoc_resample_ch >= 0) {
-		RTS_SAFE_CLOSE(stream.ptoc_resample_ch, rts_av_destroy_chn);
-		stream.ptoc_resample_ch = -1;
-	}
+    RTS_SAFE_CLOSE(stream.decode_ch, rts_av_destroy_chn);
+    RTS_SAFE_CLOSE(stream.dtom_resample_ch, rts_av_destroy_chn);
+    RTS_SAFE_CLOSE(stream.mixer_ch, rts_av_destroy_chn);
+    RTS_SAFE_CLOSE(stream.playback_ch, rts_av_destroy_chn);
+    RTS_SAFE_CLOSE(stream.ptoc_resample_ch, rts_av_destroy_chn);
+    RTS_SAFE_CLOSE(stream.capture_ch, rts_av_destroy_chn);
+    RTS_SAFE_CLOSE(stream.capture_aec_ch, rts_av_destroy_chn);
+    RTS_SAFE_CLOSE(stream.atoe_resample_ch, rts_av_destroy_chn);
+    RTS_SAFE_CLOSE(stream.encode_ch, rts_av_destroy_chn);
+    stream_init();
 	return ret;
 }
 
@@ -291,7 +328,55 @@ static int stream_start(void)
 {
 	int ret=0;
 	struct rts_aec_control *aec_ctrl;
+	int volume;
 	pthread_t	id;
+    ret = rts_av_enable_chn(stream.decode_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable decode_ch fail, ret = %d", ret);
+		return -1;
+	}
+    ret = rts_av_enable_chn(stream.dtom_resample_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable dtom_resample_ch fail, ret = %d", ret);
+		return -1;
+	}
+    ret = rts_av_enable_chn(stream.mixer_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable mixer_ch fail, ret = %d", ret);
+		return -1;
+	}
+    ret = rts_av_enable_chn(stream.playback_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable playback_ch fail, ret = %d", ret);
+		return -1;
+	}
+    ret = rts_av_enable_chn(stream.ptoc_resample_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable ptoc_resample_ch fail, ret = %d", ret);
+		return -1;
+	}
+    ret = rts_av_enable_chn(stream.capture_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable capture_ch fail, ret = %d", ret);
+		return -1;
+	}
+    ret = rts_av_enable_chn(stream.capture_aec_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable capture_aec_ch fail, ret = %d", ret);
+		return -1;
+	}
+    ret = rts_av_enable_chn(stream.atoe_resample_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable atoe_resample_ch fail, ret = %d", ret);
+		return -1;
+	}
+    ret = rts_av_enable_chn(stream.encode_ch);
+	if (ret) {
+		log_qcy(DEBUG_SERIOUS, "enable encode_ch fail, ret = %d", ret);
+		return -1;
+	}
+
+/*
 	if( stream.ptoc_resample_ch != -1 ) {
 		ret = rts_av_enable_chn(stream.ptoc_resample_ch);
 		if (ret) {
@@ -343,17 +428,30 @@ static int stream_start(void)
 	else {
 		return -1;
 	}
+*/
 	rts_av_query_aec_ctrl(stream.capture_aec_ch, &aec_ctrl);
 	aec_ctrl->aec_enable = config.profile.aec_enable;
 	aec_ctrl->ns_enable = config.profile.ns_enable;
 	aec_ctrl->ns_level = config.profile.ns_level;
+	aec_ctrl->aec_scale = config.profile.aec_scale;
+	aec_ctrl->aec_thr = config.profile.aec_thr;
 	rts_av_set_aec_ctrl(aec_ctrl);
 	rts_av_release_aec_ctrl(aec_ctrl);
 	aec_ctrl = NULL;
 	stream.frame = 0;
-    ret = rts_av_start_recv(stream.encoder);
+	rts_audio_get_playback_volume(&volume);
+	rts_audio_set_playback_volume(config.profile.playback_volume);
+	rts_audio_get_capture_volume(&volume);
+	rts_audio_set_capture_volume(config.profile.capture_volume);
+	//***
+    ret = rts_av_start_recv(stream.encode_ch);
     if (ret) {
     	log_qcy(DEBUG_SERIOUS, "start recv audio fail, ret = %d", ret);
+    	return -1;
+    }
+    ret = rts_av_start_send(stream.decode_ch);
+    if (ret) {
+    	log_qcy(DEBUG_SERIOUS, "start send audio fail, ret = %d", ret);
     	return -1;
     }
 	ret = pthread_create(&id, NULL, audio_main_func, (void*)&stream);
@@ -370,18 +468,18 @@ static int stream_start(void)
 static int stream_stop(void)
 {
 	int ret=0;
-	if(stream.encoder!=-1)
-		ret = rts_av_stop_recv(stream.encoder);
+	if(stream.encode_ch!=-1)
+		ret = rts_av_stop_recv(stream.encode_ch);
 	if(stream.ptoc_resample_ch!=-1)
 		ret = rts_av_disable_chn(stream.ptoc_resample_ch);
-	if(stream.capture!=-1)
-		ret = rts_av_disable_chn(stream.capture);
+	if(stream.capture_ch!=-1)
+		ret = rts_av_disable_chn(stream.capture_ch);
 	if(stream.capture_aec_ch!=-1)
 		ret = rts_av_disable_chn(stream.capture_aec_ch);
 	if(stream.atoe_resample_ch!=-1)
 		ret = rts_av_disable_chn(stream.atoe_resample_ch);
-	if(stream.encoder!=-1)
-		ret = rts_av_disable_chn(stream.encoder);
+	if(stream.encode_ch!=-1)
+		ret = rts_av_disable_chn(stream.encode_ch);
 	stream.frame = 0;
 	stream.realtek_stamp = 0;
 	stream.unix_stamp = 0;
@@ -396,6 +494,78 @@ static int audio_init(void)
 	int codec_channels = 2;
 	struct rts_av_profile profile;
 	stream_init();
+	//start
+	stream.decode_ch = rts_av_create_audio_decode_chn();
+	if (RTS_IS_ERR(stream.decode_ch)) {
+		 ret = stream.decode_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "audio decode chn : %d", stream.decode_ch);
+	rts_av_get_profile(stream.decode_ch, &profile);
+	profile.fmt = RTS_A_FMT_ULAW;
+	ret = rts_av_set_profile(stream.decode_ch, &profile);
+	if (RTS_IS_ERR(ret)) {
+		 log_qcy(DEBUG_WARNING, "set decode fail, ret = %d", ret);
+		 return ret;
+	}
+	stream.dtom_resample_ch = rts_av_create_audio_resample_chn(
+		config.playback.rate, config.playback.format, config.playback.channels);
+	if (RTS_IS_ERR(stream.dtom_resample_ch)) {
+		 ret = stream.dtom_resample_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "audio resample chn : %d", stream.dtom_resample_ch);
+	stream.mixer_ch = rts_av_create_audio_mixer_chn();
+	if (RTS_IS_ERR(stream.mixer_ch)) {
+		 ret = stream.mixer_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "audio mixer chn : %d", stream.mixer_ch);
+	stream.playback_ch = rts_av_create_audio_playback_chn(&config.playback);
+	if (RTS_IS_ERR(stream.playback_ch)) {
+		 ret = stream.playback_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "audio playback chn : %d", stream.playback_ch);
+	stream.ptoc_resample_ch = rts_av_create_audio_resample_chn(
+		config.capture.rate, config.capture.format, config.capture.channels);
+	if (RTS_IS_ERR(stream.ptoc_resample_ch)) {
+		 ret = stream.ptoc_resample_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "audio resample chn : %d", stream.ptoc_resample_ch);
+	stream.capture_ch = rts_av_create_audio_capture_chn(&config.capture);
+	if (RTS_IS_ERR(stream.capture_ch)) {
+		 ret = stream.capture_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "audio capture chn : %d", stream.capture_ch);
+	stream.capture_aec_ch = rts_av_create_audio_aec_chn();
+	if (RTS_IS_ERR(stream.capture_aec_ch)) {
+		 ret = stream.capture_aec_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "audio aec chn : %d", stream.capture_aec_ch);
+	stream.encode_ch = rts_av_create_audio_encode_chn(RTS_AUDIO_TYPE_ID_ALAW, 0);
+	if (RTS_IS_ERR(stream.encode_ch)) {
+		 ret = stream.encode_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "encode chn : %d", stream.encode_ch);
+	rts_av_get_profile(stream.encode_ch, &profile);
+	codec_samplerate = profile.audio.samplerate;
+	codec_format = profile.audio.bitfmt;
+	codec_channels = profile.audio.channels;
+	stream.atoe_resample_ch = rts_av_create_audio_resample_chn(
+				 codec_samplerate, codec_format,
+				 codec_channels);
+	if (RTS_IS_ERR(stream.atoe_resample_ch)) {
+		 ret = stream.atoe_resample_ch;
+		 return ret;
+	}
+	log_qcy(DEBUG_INFO, "audio resample chn : %d", stream.atoe_resample_ch);
+
+/*
 	stream.ptoc_resample_ch = rts_av_create_audio_resample_chn(config.capture.rate, config.capture.format, config.capture.channels);
 	if (stream.ptoc_resample_ch < 0) {
 		log_qcy(DEBUG_SERIOUS, "fail to create audio ptoc_resample_ch chn, ret = %d", stream.ptoc_resample_ch);
@@ -432,6 +602,51 @@ static int audio_init(void)
 		return -1;
 	}
 	log_qcy(DEBUG_INFO, "atoe_resample_ch chnno:%d", stream.atoe_resample_ch);
+*/
+	ret = rts_av_bind(stream.decode_ch, stream.dtom_resample_ch);
+	if (ret) {
+		 log_qcy(DEBUG_WARNING, "fail to bind decode and resample, ret = %d", ret);
+		 return ret;
+	}
+	ret = rts_av_bind(stream.dtom_resample_ch, stream.mixer_ch);
+	if (ret) {
+		 log_qcy(DEBUG_WARNING, "fail to bind resample and mixer, ret = %d", ret);
+		 return ret;
+	}
+	ret = rts_av_bind(stream.mixer_ch, stream.playback_ch);
+	if (ret) {
+		 log_qcy(DEBUG_WARNING, "fail to bind mixer and playback, ret = %d", ret);
+		 return ret;
+	}
+	ret = rts_av_bind(stream.playback_ch, stream.ptoc_resample_ch);
+	if (ret) {
+		 log_qcy(DEBUG_WARNING, "fail to bind playback and resample, ret = %d", ret);
+		 return ret;
+	}
+	ret = rts_av_bind(stream.ptoc_resample_ch, stream.capture_aec_ch);
+	if (ret) {
+		 log_qcy(DEBUG_WARNING, "fail to bind resample and aec, ret = %d", ret);
+		 return ret;
+	}
+	ret = rts_av_bind(stream.capture_ch, stream.capture_aec_ch);
+	if (ret) {
+		 log_qcy(DEBUG_WARNING, "fail to bind capture and aec, ret = %d", ret);
+		 return ret;
+	}
+	ret = rts_av_bind(stream.capture_aec_ch, stream.atoe_resample_ch);
+	if (ret) {
+		 log_qcy(DEBUG_WARNING, "fail to bind aec and resample, ret = %d", ret);
+		 return ret;
+	}
+	ret = rts_av_bind(stream.atoe_resample_ch, stream.encode_ch);
+	if (ret) {
+		 log_qcy(DEBUG_WARNING, "fail to bind resample and encode, ret = %d", ret);
+		 return ret;
+	}
+
+
+
+/*
 	ret = rts_av_bind(stream.playback_ch, stream.ptoc_resample_ch);
 	if (ret) {
 	   	log_qcy(DEBUG_SERIOUS, "fail to bind playback_ch and ptoc_resample_ch, ret = %d", ret);
@@ -458,6 +673,7 @@ static int audio_init(void)
     	log_qcy(DEBUG_SERIOUS, "fail to bind capture and encode, ret = %d", ret);
     	return -1;
     }
+*/
 	return 0;
 }
 
@@ -621,14 +837,9 @@ static int server_message_proc(void)
 			break;
 		case MSG_REALTEK_PROPERTY_NOTIFY:
 		case MSG_REALTEK_PROPERTY_GET_ACK:
-		case MSG_SPEAKER_PROPERTY_GET_ACK:
 			if( msg.arg_in.cat == REALTEK_PROPERTY_AV_STATUS ) {
 				if( msg.arg_in.dog == 1 )
 					misc_set_bit(&info.init_status, AUDIO_INIT_CONDITION_REALTEK, 1);
-			}
-			else if( msg.arg_pass.cat == SPEAKER_PLAYBACK_CHN_NUM ) {
-				stream.playback_ch = msg.arg_in.cat;
-				misc_set_bit(&info.init_status, AUDIO_INIT_CONDITION_SPEAKER, 1);
 			}
 			break;
 		case MSG_MANAGER_EXIT_ACK:
@@ -636,6 +847,79 @@ static int server_message_proc(void)
 			break;
 		case MSG_MANAGER_DUMMY:
 			break;
+        case MSG_AUDIO_SPEAKER_CTL_PLAY: {
+        	if( msg.arg_in.cat == SPEAKER_CTL_DEV_START_FINISH ) {
+				ret = audio_play(DEV_START_FINISH);
+			} else if( msg.arg_in.cat == SPEAKER_CTL_ZBAR_SCAN_SUCCEED ) {
+				ret = audio_play(ZBAR_SCAN_SUCCEED);
+			} else if( msg.arg_in.cat == SPEAKER_CTL_WIFI_CONNECT ) {
+				ret = audio_play(WIFI_CONNECT_SUCCEED);
+			} else if( msg.arg_in.cat == SPEAKER_CTL_ZBAR_SCAN ) {
+				ret = audio_play(ZBAR_SCAN);
+			} else if( msg.arg_in.cat == SPEAKER_CTL_INTERCOM_START ) {
+				device_iot_config_t device_iot_tmp;
+				message_t send_msg;
+				message_t dev_send_msg;
+				msg_init(&dev_send_msg);
+			    msg_init(&send_msg);
+				device_iot_tmp.amp_on_off = 1;
+				dev_send_msg.message = MSG_DEVICE_CTRL_DIRECT;
+				dev_send_msg.arg_in.cat = DEVICE_CTRL_AMPLIFIER;
+				dev_send_msg.sender = dev_send_msg.receiver = SERVER_AUDIO;
+				dev_send_msg.arg = (void*)&device_iot_tmp;
+				dev_send_msg.arg_size = sizeof(device_iot_config_t);
+				manager_common_send_message(SERVER_DEVICE, &dev_send_msg);
+
+				system("amixer cset numid=11 20");
+				system("amixer cset numid=1 108");
+
+				send_iot_ack(&msg, &send_msg, MSG_AUDIO_SPEAKER_CTL_PLAY_ACK, msg.receiver, ret,
+						NULL, 0);
+			} else if( msg.arg_in.cat == SPEAKER_CTL_INTERCOM_STOP ) {
+				message_t send_msg;
+				device_iot_config_t device_iot_tmp;
+				message_t dev_send_msg;
+				msg_init(&dev_send_msg);
+			    msg_init(&send_msg);
+				device_iot_tmp.amp_on_off = 0;
+				dev_send_msg.message = MSG_DEVICE_CTRL_DIRECT;
+				dev_send_msg.arg_in.cat = DEVICE_CTRL_AMPLIFIER;
+				dev_send_msg.sender = dev_send_msg.receiver = SERVER_AUDIO;
+				dev_send_msg.arg = (void*)&device_iot_tmp;
+				dev_send_msg.arg_size = sizeof(device_iot_config_t);
+				manager_common_send_message(SERVER_DEVICE, &dev_send_msg);
+
+				system("amixer cset numid=11 46");
+				system("amixer cset numid=1 127");
+
+				send_iot_ack(&msg, &send_msg, MSG_AUDIO_SPEAKER_CTL_PLAY_ACK, msg.receiver, ret,
+						NULL, 0);
+			}
+			else if( msg.arg_in.cat == SPEAKER_CTL_INSTALLING ) {
+				ret = audio_play(INSTALLING);
+			}
+			else if( msg.arg_in.cat == SPEAKER_CTL_INSTALLEND ) {
+				ret = audio_play(INSTALLEND);
+			}
+			else if( msg.arg_in.cat == SPEAKER_CTL_INSTALLFAILED ) {
+				ret = audio_play(INSTALLFAILED);
+			}
+			else if( msg.arg_in.cat == SPEAKER_CTL_RESET ) {
+				ret = audio_play(RESET_SUCCESS);
+			}
+			else if( msg.arg_in.cat == SPEAKER_CTL_INTERNET_CONNECT_DEFEAT ) {
+				ret = audio_play(INTERNET_CONNECT_DEFEAT);
+			}
+            break;
+        }
+        case MSG_AUDIO_SPEAKER_CTL_DATA:
+        	if( msg.arg_in.cat == SPEAKER_CTL_INTERCOM_DATA ) {
+        		if(msg.arg) {
+					audio_speaker(msg.arg, msg.arg_size);
+				}
+			}
+            break;
+
 		default:
 			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
 			break;
@@ -671,16 +955,6 @@ static int server_none(void)
 		/****************************/
 		usleep(MESSAGE_RESENT_SLEEP);
 	}
-	if( !misc_get_bit( info.init_status, AUDIO_INIT_CONDITION_SPEAKER ) ) {
-		/********message body********/
-		msg_init(&msg);
-		msg.message = MSG_SPEAKER_PROPERTY_GET;
-		msg.sender = msg.receiver = SERVER_AUDIO;
-		msg.arg_pass.cat = SPEAKER_PLAYBACK_CHN_NUM;
-		manager_common_send_message(SERVER_SPEAKER, &msg);
-		/****************************/
-		usleep(MESSAGE_RESENT_SLEEP);
-	}
 	if( misc_full_bit( info.init_status, AUDIO_INIT_CONDITION_NUM ) ) {
 		info.status = STATUS_WAIT;
 	}
@@ -700,8 +974,14 @@ static int server_setup(void)
 static int server_start(void)
 {
 	int ret = 0;
-	if( stream_start()==0 )
+	static int first_start = 0;
+	if( stream_start()==0 ) {
 		info.status = STATUS_RUN;
+	    if(!first_start) {
+	    	ret = audio_play(DEV_START_ING);
+	    	first_start = 1;
+	    }
+	}
 	else
 		info.status = STATUS_ERROR;
 	return ret;
@@ -747,6 +1027,7 @@ static void task_start(void)
 			info.status = STATUS_START;
 			break;
 		case STATUS_START:
+			misc_set_bit(&info.status2, RUN_MODE_SPEAKER, 1);
 			server_start();
 			break;
 		case STATUS_RUN:
@@ -902,6 +1183,8 @@ static void task_default(void)
 			server_setup();
 			break;
 		case STATUS_IDLE:
+			misc_set_bit(&info.status2, RUN_MODE_SPEAKER, 1);
+			server_start();
 			break;
 		case STATUS_RUN:
 			break;
@@ -937,6 +1220,35 @@ static void *server_func(void)
 	pthread_exit(0);
 }
 
+/*
+ * internal interface
+ *
+ */
+int audio_speaker(char *buffer, unsigned int buffer_size)
+{
+    struct rts_av_buffer *rts_buffer = NULL;
+
+    if( info.status != STATUS_RUN) {
+        log_qcy(DEBUG_SERIOUS, "intercom already stop");
+        return -1;
+    }
+    rts_buffer = rts_av_new_buffer(buffer_size);
+    if (!rts_buffer) {
+        log_qcy(DEBUG_SERIOUS, "alloc buffer fail");
+        return -1;
+    }
+
+    rts_av_set_buffer_callback(rts_buffer, &buffer_size, recycle_buffer);
+    rts_av_get_buffer(rts_buffer);
+
+    memcpy(rts_buffer->vm_addr, buffer, buffer_size);
+    rts_buffer->bytesused = buffer_size;
+    rts_buffer->timestamp = 0;
+    rts_av_send(stream.decode_ch, rts_buffer);
+
+    RTS_SAFE_RELEASE(rts_buffer, rts_av_put_buffer);
+    return 0;
+}
 
 /*
  * external interface
