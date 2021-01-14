@@ -767,6 +767,48 @@ static void server_release_3(void)
 /*
  * State Machine
  */
+static int audio_message_block(void)
+{
+	int ret = 0;
+	int id = -1, id1, index = 0;
+	message_t msg;
+	//search for unblocked message and swap if necessory
+	if( !info.msg_lock ) {
+		log_qcy(DEBUG_VERBOSE, "===audio message block, return 0 when first message is msg_lock=0");
+		return 0;
+	}
+	index = 0;
+	msg_init(&msg);
+	ret = msg_buffer_probe_item(&message, index, &msg);
+	if( ret ) {
+		log_qcy(DEBUG_VERBOSE, "===audio message block, return 0 when first message is empty");
+		return 0;
+	}
+	if( msg_is_system(msg.message) || msg_is_response(msg.message) ) {
+		log_qcy(DEBUG_VERBOSE, "===audio message block, return 0 when first message is system or response message %x", msg.message);
+		return 0;
+	}
+	id = msg.message;
+	do {
+		index++;
+		msg_init(&msg);
+		ret = msg_buffer_probe_item(&message, index, &msg);
+		if(ret) {
+			log_qcy(DEBUG_VERBOSE, "===audio message block, return 1 when message index = %d is not found!", index);
+			return 1;
+		}
+		if( msg_is_system(msg.message) ||
+				msg_is_response(msg.message) ) {	//find one behind system or response message
+			msg_buffer_swap(&message, 0, index);
+			id1 = msg.message;
+			log_qcy(DEBUG_INFO, "AUDIO: swapped message happend, message %x was swapped with message %x", id, id1);
+			return 0;
+		}
+	}
+	while(!ret);
+	return ret;
+}
+
 static int audio_message_filter(message_t  *msg)
 {
 	int ret = 0;
@@ -788,7 +830,7 @@ static int server_message_proc(void)
 			pthread_cond_wait(&cond,&mutex);
 		}
 	}
-	if( info.msg_lock ) {
+	if( audio_message_block() ) {
 		pthread_mutex_unlock(&mutex);
 		return 0;
 	}
