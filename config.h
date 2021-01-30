@@ -36,6 +36,10 @@ typedef struct audio_profile_t {
 	int							aec_thr;
 	int							capture_volume;
 	int							playback_volume;
+	int							amic_capture;
+	int							capture_volume_dev;
+	int							playback_volume_dev;
+	int							amic_capture_dev;
 } audio_profile_t;
 
 typedef struct audio_config_t {

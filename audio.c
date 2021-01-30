@@ -17,6 +17,7 @@
 #include <rtsaudio.h>
 #include <malloc.h>
 #include <miss.h>
+#include <string.h>
 //program header
 #include "../../server/realtek/realtek_interface.h"
 #include "../../tools/tools_interface.h"
@@ -48,6 +49,7 @@ static	pthread_mutex_t		mutex = PTHREAD_MUTEX_INITIALIZER;
 static	pthread_cond_t		cond = PTHREAD_COND_INITIALIZER;
 static 	miss_session_t		*session[MAX_SESSION_NUMBER];
 
+static int					motor_runing = 1;
 //function
 //common
 static void *server_func(void);
@@ -68,6 +70,9 @@ static int stream_stop(void);
 static int audio_init(void);
 static int write_audio_buffer(av_packet_t *data, int id, int target, int type);
 static void write_audio_info(struct rts_av_buffer *data, av_data_info_t	*info);
+static void notify_device_server(int message, int arg_cat, device_iot_config_t *tmp);
+static int amixer_set(int id, int value);
+static void motor_check_scheduler(void);
 
 /*
  * %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -102,17 +107,11 @@ static void recycle_buffer(void *master, struct rts_av_buffer *buffer)
 static int audio_play(char *path)
 {
     int ret;
-	message_t dev_send_msg;
-	device_iot_config_t device_iot_tmp;
-	msg_init(&dev_send_msg);
-	memset(&device_iot_tmp, 0 , sizeof(device_iot_config_t));
-	device_iot_tmp.amp_on_off = 1;
-	dev_send_msg.message = MSG_DEVICE_CTRL_DIRECT;
-	dev_send_msg.sender = dev_send_msg.receiver = SERVER_AUDIO;
-	dev_send_msg.arg = (void*)&device_iot_tmp;
-	dev_send_msg.arg_in.cat = DEVICE_CTRL_AMPLIFIER;
-	dev_send_msg.arg_size = sizeof(device_iot_config_t);
-	manager_common_send_message(SERVER_DEVICE, &dev_send_msg);
+
+	device_iot_config_t tmp;
+	memset(&tmp, 0, sizeof(tmp));
+	tmp.amp_on_off = 1;
+	notify_device_server(MSG_DEVICE_CTRL_DIRECT, DEVICE_CTRL_AMPLIFIER, &tmp);
 
     ret = play_audio(path);
     if(ret)
@@ -223,7 +222,7 @@ static int *audio_main_func(void* arg)
     		}
     		write_audio_info( buffer, &packet->info);
     		for(i=0;i<MAX_SESSION_NUMBER;i++) {
-    			if( misc_get_bit(info.status2, RUN_MODE_MISS+i) ) {
+    			if( misc_get_bit(info.status2, RUN_MODE_MISS+i) && !motor_runing) { //stop send audio buffer when motor running
     				ret = write_audio_buffer(packet, MSG_MISS_AUDIO_DATA, SERVER_MISS, i);
     				if( (ret == MISS_LOCAL_ERR_MISS_GONE) || (ret == MISS_LOCAL_ERR_SESSION_GONE) ) {
     					log_qcy(DEBUG_WARNING, "Miss audio ring buffer send failed due to non-existing miss server or session");
@@ -322,6 +321,14 @@ static int stream_destroy(void)
     RTS_SAFE_CLOSE(stream.encode_ch, rts_av_destroy_chn);
     stream_init();
 	return ret;
+}
+
+static int amixer_set(int id, int value)
+{
+	char ackbuf[AMIXER_BUFFER];
+	memset(ackbuf, 0, AMIXER_BUFFER);
+	snprintf(ackbuf,AMIXER_BUFFER, AMIXER_CSET,id,value);
+	system(ackbuf);
 }
 
 static int stream_start(void)
@@ -439,10 +446,11 @@ static int stream_start(void)
 	rts_av_release_aec_ctrl(aec_ctrl);
 	aec_ctrl = NULL;
 	stream.frame = 0;
-	rts_audio_get_playback_volume(&volume);
-	rts_audio_set_playback_volume(config.profile.playback_volume);
-	rts_audio_get_capture_volume(&volume);
-	rts_audio_set_capture_volume(config.profile.capture_volume);
+
+//	amixer_set(11,config.profile.amic_capture_dev);
+//	amixer_set(8,config.profile.capture_volume_dev);
+//	amixer_set(1,config.profile.playback_volume_dev);
+
 	//***
     ret = rts_av_start_recv(stream.encode_ch);
     if (ret) {
@@ -502,7 +510,7 @@ static int audio_init(void)
 	}
 	log_qcy(DEBUG_INFO, "audio decode chn : %d", stream.decode_ch);
 	rts_av_get_profile(stream.decode_ch, &profile);
-	profile.fmt = RTS_A_FMT_ULAW;
+	profile.fmt = RTS_A_FMT_ALAW;
 	ret = rts_av_set_profile(stream.decode_ch, &profile);
 	if (RTS_IS_ERR(ret)) {
 		 log_qcy(DEBUG_WARNING, "set decode fail, ret = %d", ret);
@@ -687,6 +695,19 @@ static void write_audio_info(struct rts_av_buffer *data, av_data_info_t	*info)
 	info->size = data->bytesused;
 }
 
+static void notify_device_server(int message, int arg_cat, device_iot_config_t *tmp)
+{
+	message_t msg;
+	msg_init(&msg);
+
+	msg.message = message;
+	msg.sender = msg.receiver = SERVER_AUDIO;
+	msg.arg = tmp;
+	msg.arg_in.cat = arg_cat;
+	msg.arg_size = sizeof(device_iot_config_t);
+	manager_common_send_message(SERVER_DEVICE, &msg);
+}
+
 static int write_audio_buffer(av_packet_t *data, int id, int target, int channel)
 {
 	int ret=0;
@@ -819,10 +840,33 @@ static int audio_message_filter(message_t  *msg)
 	return ret;
 }
 
+static void motor_check_scheduler(void)
+{
+	message_t msg;
+	msg_init(&msg);
+
+	if(motor_runing)
+	{
+		msg.message = MSG_DEVICE_PROPERTY_GET;
+		msg.sender = msg.receiver = SERVER_AUDIO;
+		msg.arg_pass.cat = DEVICE_ACTION_MOTO_STATUS;
+		manager_common_send_message(SERVER_DEVICE, &msg);
+		/****************************/
+	}else
+	{
+		msg_init(&msg);
+		msg.message = MSG_MANAGER_TIMER_REMOVE;
+		msg.sender = msg.receiver = SERVER_AUDIO;
+		msg.arg_in.handler = motor_check_scheduler;
+		manager_common_send_message(SERVER_MANAGER, &msg);
+	}
+}
+
 static int server_message_proc(void)
 {
 	int ret = 0;
 	message_t msg;
+	message_t send_msg;
 	//condition
 	pthread_mutex_lock(&mutex);
 	if( message.head == message.tail ) {
@@ -835,6 +879,7 @@ static int server_message_proc(void)
 		return 0;
 	}
 	msg_init(&msg);
+    msg_init(&send_msg);
 	ret = msg_buffer_pop(&message, &msg);
 	pthread_mutex_unlock(&mutex);
 	if( ret == 1)
@@ -867,6 +912,26 @@ static int server_message_proc(void)
 			info.task.start = info.status;
 			info.msg_lock = 1;
 			break;
+		case MSG_AUDIO_CTL:
+			if(msg.arg_in.cat == AUDIO_CTL_MOTOR)
+			{
+				if(msg.arg_in.dog >= 1)
+				{
+					motor_runing = 1;
+					if(msg.arg_in.dog == DEVICE_CTRL_MOTOR_RESET)
+					{
+						msg_init(&msg);
+						msg.message = MSG_MANAGER_TIMER_ADD;
+						msg.sender = SERVER_AUDIO;
+						msg.arg_in.cat = 3000;
+						msg.arg_in.handler = &motor_check_scheduler;
+						manager_common_send_message(SERVER_MANAGER, &msg);
+					}
+				}
+				else if(msg.arg_in.dog == 0)
+					motor_runing = 0;
+			}
+			break;
 		case MSG_MANAGER_EXIT:
 			msg_init(&info.task.msg);
 			msg_copy(&info.task.msg, &msg);
@@ -889,6 +954,12 @@ static int server_message_proc(void)
 			break;
 		case MSG_MANAGER_DUMMY:
 			break;
+		case MSG_DEVICE_PROPERTY_GET_ACK:
+			if(msg.arg_pass.cat == DEVICE_ACTION_MOTO_STATUS) {
+				if(msg.arg_in.dog == 1)
+					motor_runing = 0;
+			}
+			break;
         case MSG_AUDIO_SPEAKER_CTL_PLAY: {
         	if( msg.arg_in.cat == SPEAKER_CTL_DEV_START_FINISH ) {
 				ret = audio_play(DEV_START_FINISH);
@@ -899,40 +970,28 @@ static int server_message_proc(void)
 			} else if( msg.arg_in.cat == SPEAKER_CTL_ZBAR_SCAN ) {
 				ret = audio_play(ZBAR_SCAN);
 			} else if( msg.arg_in.cat == SPEAKER_CTL_INTERCOM_START ) {
-				device_iot_config_t device_iot_tmp;
-				message_t send_msg;
-				message_t dev_send_msg;
-				msg_init(&dev_send_msg);
-			    msg_init(&send_msg);
-				device_iot_tmp.amp_on_off = 1;
-				dev_send_msg.message = MSG_DEVICE_CTRL_DIRECT;
-				dev_send_msg.arg_in.cat = DEVICE_CTRL_AMPLIFIER;
-				dev_send_msg.sender = dev_send_msg.receiver = SERVER_AUDIO;
-				dev_send_msg.arg = (void*)&device_iot_tmp;
-				dev_send_msg.arg_size = sizeof(device_iot_config_t);
-				manager_common_send_message(SERVER_DEVICE, &dev_send_msg);
 
-				system("amixer cset numid=11 20");
-				system("amixer cset numid=1 108");
+				amixer_set(11,config.profile.amic_capture);
+				amixer_set(8,config.profile.capture_volume);
+				amixer_set(1,config.profile.playback_volume);
+
+				device_iot_config_t tmp;
+				memset(&tmp, 0, sizeof(tmp));
+				tmp.amp_on_off = 1;
+				notify_device_server(MSG_DEVICE_CTRL_DIRECT, DEVICE_CTRL_AMPLIFIER, &tmp);
 
 				send_iot_ack(&msg, &send_msg, MSG_AUDIO_SPEAKER_CTL_PLAY_ACK, msg.receiver, ret,
 						NULL, 0);
 			} else if( msg.arg_in.cat == SPEAKER_CTL_INTERCOM_STOP ) {
-				message_t send_msg;
-				device_iot_config_t device_iot_tmp;
-				message_t dev_send_msg;
-				msg_init(&dev_send_msg);
-			    msg_init(&send_msg);
-				device_iot_tmp.amp_on_off = 0;
-				dev_send_msg.message = MSG_DEVICE_CTRL_DIRECT;
-				dev_send_msg.arg_in.cat = DEVICE_CTRL_AMPLIFIER;
-				dev_send_msg.sender = dev_send_msg.receiver = SERVER_AUDIO;
-				dev_send_msg.arg = (void*)&device_iot_tmp;
-				dev_send_msg.arg_size = sizeof(device_iot_config_t);
-				manager_common_send_message(SERVER_DEVICE, &dev_send_msg);
 
-				system("amixer cset numid=11 46");
-				system("amixer cset numid=1 127");
+				amixer_set(11,config.profile.amic_capture_dev);
+				amixer_set(8,config.profile.capture_volume_dev);
+				amixer_set(1,config.profile.playback_volume_dev);
+
+				device_iot_config_t tmp;
+				memset(&tmp, 0, sizeof(tmp));
+				tmp.amp_on_off = 0;
+				notify_device_server(MSG_DEVICE_CTRL_DIRECT, DEVICE_CTRL_AMPLIFIER, &tmp);
 
 				send_iot_ack(&msg, &send_msg, MSG_AUDIO_SPEAKER_CTL_PLAY_ACK, msg.receiver, ret,
 						NULL, 0);
@@ -949,6 +1008,12 @@ static int server_message_proc(void)
 			else if( msg.arg_in.cat == SPEAKER_CTL_RESET ) {
 				ret = audio_play(RESET_SUCCESS);
 			}
+			else if( msg.arg_in.cat == SPEAKER_CTL_SD_PLUG_SUCCESS ) {
+				ret = audio_play(SD_PLUG_SUCCESS);
+			}
+			else if( msg.arg_in.cat == SPEAKER_CTL_SD_EJECTED ) {
+				ret = audio_play(SD_EJECTED);
+			}
 			else if( msg.arg_in.cat == SPEAKER_CTL_INTERNET_CONNECT_DEFEAT ) {
 				ret = audio_play(INTERNET_CONNECT_DEFEAT);
 			}
@@ -961,7 +1026,6 @@ static int server_message_proc(void)
 				}
 			}
             break;
-
 		default:
 			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
 			break;
@@ -1006,8 +1070,18 @@ static int server_none(void)
 static int server_setup(void)
 {
 	int ret = 0;
+	message_t msg;
 	if( audio_init() == 0)
+	{
+		msg_init(&msg);
+		msg.message = MSG_MANAGER_TIMER_ADD;
+		msg.sender = SERVER_AUDIO;
+		msg.arg_in.cat = 3000;
+		msg.arg_in.handler = &motor_check_scheduler;
+		manager_common_send_message(SERVER_MANAGER, &msg);
+
 		info.status = STATUS_IDLE;
+	}
 	else
 		info.status = STATUS_ERROR;
 	return ret;
@@ -1016,14 +1090,9 @@ static int server_setup(void)
 static int server_start(void)
 {
 	int ret = 0;
-	static int first_start = 0;
-	if( stream_start()==0 ) {
+	message_t msg;
+	if( stream_start()==0 )
 		info.status = STATUS_RUN;
-	    if(!first_start) {
-	    	ret = audio_play(DEV_START_ING);
-	    	first_start = 1;
-	    }
-	}
 	else
 		info.status = STATUS_ERROR;
 	return ret;
@@ -1319,7 +1388,7 @@ int server_audio_message(message_t *msg)
 		return -1;
 	}
 	ret = msg_buffer_push(&message, msg);
-	log_qcy(DEBUG_VERBOSE, "push into the audio message queue: sender=%d, message=%x, ret=%d, head=%d, tail=%d", msg->sender, msg->message, ret,
+	log_qcy(DEBUG_SERIOUS, "push into the audio message queue: sender=%d, message=%x, ret=%d, head=%d, tail=%d", msg->sender, msg->message, ret,
 			message.head, message.tail);
 	if( ret!=0 )
 		log_qcy(DEBUG_WARNING, "message push in audio error =%d", ret);

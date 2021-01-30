@@ -29,15 +29,19 @@ static int							dirty;
 static audio_config_t				audio_config;
 
 static config_map_t audio_config_profile_map[] = {
-		{"enable", 				&(audio_config.profile.enable), 		cfg_u32, 1,0,0,1,},
-		{"aec_enable",			&(audio_config.profile.aec_enable),		cfg_u32, 1,0,0,1,},
-		{"ns_enable",			&(audio_config.profile.ns_enable),		cfg_u32, 1,0,0,1,},
-		{"ns_level",			&(audio_config.profile.ns_level),		cfg_u32, 1,0,0,100,},
-		{"aec_scale",			&(audio_config.profile.aec_scale),		cfg_u32, 1,0,0,100,},
-		{"aec_thr",				&(audio_config.profile.aec_thr),		cfg_u32, 1,0,0,100,},
-		{"capture_volume",		&(audio_config.profile.capture_volume),	cfg_u32, 1,0,0,100,},
-		{"playback_volume",		&(audio_config.profile.playback_volume),cfg_u32, 1,0,0,100,},
-    {NULL,},
+		{"enable", 				&(audio_config.profile.enable), 			cfg_u32, 1,0,0,1,},
+		{"aec_enable",			&(audio_config.profile.aec_enable),			cfg_u32, 1,0,0,1,},
+		{"ns_enable",			&(audio_config.profile.ns_enable),			cfg_u32, 1,0,0,1,},
+		{"ns_level",			&(audio_config.profile.ns_level),			cfg_u32, 1,0,0,100,},
+		{"aec_scale",			&(audio_config.profile.aec_scale),			cfg_u32, 1,0,0,100,},
+		{"aec_thr",				&(audio_config.profile.aec_thr),			cfg_u32, 1,0,0,100,},
+		{"capture_volume",		&(audio_config.profile.capture_volume),		cfg_u32, 1,0,0,200,},
+		{"playback_volume",		&(audio_config.profile.playback_volume),	cfg_u32, 1,0,0,200,},
+		{"amic_capture",		&(audio_config.profile.amic_capture),		cfg_u32, 1,0,0,200,},
+		{"capture_volume_dev",	&(audio_config.profile.capture_volume_dev),	cfg_u32, 1,0,0,200,},
+		{"playback_volume_dev",	&(audio_config.profile.playback_volume_dev),cfg_u32, 1,0,0,200,},
+		{"amic_capture_dev",	&(audio_config.profile.amic_capture_dev),	cfg_u32, 1,0,0,200,},
+		{NULL,},
 };
 
 static config_map_t audio_config_caputure_map[] = {

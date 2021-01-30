@@ -29,6 +29,9 @@
 
 #define		AUDIO_EXIT_CONDITION			( (1 << SERVER_MISS) | (1 << SERVER_RECORDER) )
 
+#define AMIXER_CSET		"amixer cset numid=%d %d"
+#define	AMIXER_BUFFER	64
+
 #define DEV_START_FINISH 			"/opt/qcy/audio_resource/dev_start_finish.alaw"
 #define DEV_START_ING	 			"/opt/qcy/audio_resource/dev_starting.alaw"
 #define WIFI_CONNECT_SUCCEED 		"/opt/qcy/audio_resource/wifi_connect_success.alaw"
@@ -39,6 +42,8 @@
 #define INSTALLEND					"/opt/qcy/audio_resource/success_upgrade.alaw"
 #define INSTALLFAILED				"/opt/qcy/audio_resource/upgrade_failed.alaw"
 #define RESET_SUCCESS				"/opt/qcy/audio_resource/reset_success.alaw"
+#define SD_EJECTED					"/opt/qcy/audio_resource/sd_ejected.alaw"
+#define SD_PLUG_SUCCESS				"/opt/qcy/audio_resource/sd_plug_success.alaw"
 /*
  * structure
  */
